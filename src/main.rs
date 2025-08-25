@@ -1,11 +1,20 @@
 fn main() {
-    // Minimal smoke test with a single triangle mesh
+    // Minimal smoke test with a single triangle mesh using barycentric inputs
     let vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     let faces = vec![[0u32, 1, 2]];
-    let source = [0.05, 0.05, 0.0];
-    let goals = vec![[0.9, 0.1, 0.0], [0.1, 0.9, 0.0]];
 
-    match rust_cgal_shortest_paths::shortest_paths(&vertices, &faces, source, &goals) {
+    // Source at centroid in face 0; goals near v1 and v2 inside the face
+    let source_face = 0usize;
+    let source_bary = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
+    let goals = vec![(0usize, [0.8, 0.1, 0.1]), (0usize, [0.1, 0.1, 0.8])];
+
+    match rust_cgal_shortest_paths::shortest_paths_barycentric(
+        &vertices,
+        &faces,
+        source_face,
+        source_bary,
+        &goals,
+    ) {
         Ok(paths) => {
             for (i, p) in paths.iter().enumerate() {
                 println!("Path {} has {} points", i, p.len());
