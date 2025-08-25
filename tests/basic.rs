@@ -34,12 +34,15 @@ fn barycentric_source_and_goal() {
     let poly = &paths[0];
     assert!(poly.len() >= 2);
 
+    // Convert barycentric polyline to Euclidean for verification only
+    let epoly = bary_poly_to_euclid(&vertices, &faces, poly);
+
     // Verify endpoints equal the evaluated barycentric points (within epsilon)
     let src_pt = bary_on_face(&vertices, &faces, source_face, source_bary);
     let goal_pt = bary_on_face(&vertices, &faces, goal_face, goal_bary);
 
-    let first = poly.first().copied().unwrap();
-    let last = poly.last().copied().unwrap();
+    let first = epoly.first().copied().unwrap();
+    let last = epoly.last().copied().unwrap();
     let eps = 1e-6;
     assert!(approx_pt(first, src_pt, eps));
     assert!(approx_pt(last, goal_pt, eps));
@@ -83,6 +86,28 @@ fn bary_on_face(
 
 fn approx_pt(a: [f64; 3], b: [f64; 3], eps: f64) -> bool {
     dist(a, b) <= eps
+}
+
+// Convert a polyline of FaceBary to Euclidean points using the mesh
+fn bary_poly_to_euclid(
+    vertices: &[[f64; 3]],
+    faces: &[[u32; 3]],
+    poly: &[FaceBary],
+) -> Vec<[f64; 3]> {
+    let mut out = Vec::with_capacity(poly.len());
+    for fb in poly.iter() {
+        let [i0, i1, i2] = faces[fb.face];
+        let a = vertices[i0 as usize];
+        let b = vertices[i1 as usize];
+        let c = vertices[i2 as usize];
+        let p = [
+            fb.bary[0] * a[0] + fb.bary[1] * b[0] + fb.bary[2] * c[0],
+            fb.bary[0] * a[1] + fb.bary[1] * b[1] + fb.bary[2] * c[1],
+            fb.bary[0] * a[2] + fb.bary[1] * b[2] + fb.bary[2] * c[2],
+        ];
+        out.push(p);
+    }
+    out
 }
 
 #[test]
@@ -133,8 +158,9 @@ fn triangle_vertex_to_vertices() {
     for (i, g) in goals.iter().enumerate() {
         let poly = &paths[i];
         assert!(poly.len() >= 2, "polyline has at least the endpoints");
-        let first = poly.first().copied().unwrap();
-        let last = poly.last().copied().unwrap();
+        let epoly = bary_poly_to_euclid(&vertices, &faces, poly);
+        let first = epoly.first().copied().unwrap();
+        let last = epoly.last().copied().unwrap();
         let goal_pt = bary_on_face(&vertices, &faces, g.face, g.bary);
         // Accept either direction
         assert!(
@@ -144,7 +170,7 @@ fn triangle_vertex_to_vertices() {
             first,
             last
         );
-        let len = polyline_len(poly);
+        let len = polyline_len(&epoly);
         let expected = dist(source_pt, goal_pt);
         assert!(len >= 0.0, "length should be non-negative");
         assert!(len >= expected - 1e-8, "len {} >= {}", len, expected);
@@ -187,8 +213,9 @@ fn square_diagonal_across_faces() {
     assert_eq!(paths.len(), 1);
     let poly = &paths[0];
     let eps = 1e-6;
-    let first = poly.first().copied().unwrap();
-    let last = poly.last().copied().unwrap();
+    let epoly = bary_poly_to_euclid(&vertices, &faces, poly);
+    let first = epoly.first().copied().unwrap();
+    let last = epoly.last().copied().unwrap();
 
     let src_pt = bary_on_face(&vertices, &faces, source_face, source_bary);
     let goal_pt = bary_on_face(&vertices, &faces, goal_face, goal_bary);
@@ -200,7 +227,7 @@ fn square_diagonal_across_faces() {
         last
     );
 
-    let len = polyline_len(poly);
+    let len = polyline_len(&epoly);
     let expected = (2.0f64).sqrt();
     // Only check endpoints and that length is non-negative; conversion to Euclidean is used only for verification
     assert!(len >= 0.0, "length should be non-negative");
@@ -248,7 +275,8 @@ fn square_multiple_goals_lengths() {
     let source_pt = bary_on_face(&vertices, &faces, source_face, source_bary);
     for i in 0..goals.len() {
         let poly = &paths[i];
-        let len = polyline_len(poly);
+        let epoly = bary_poly_to_euclid(&vertices, &faces, poly);
+        let len = polyline_len(&epoly);
         // Only convert to Euclidean for verification; accept algorithmic polyline sampling
         assert!(len >= 0.0, "length should be non-negative");
         assert!(
@@ -259,8 +287,8 @@ fn square_multiple_goals_lengths() {
             expected[i]
         );
         // endpoints (accept either order)
-        let first = poly.first().copied().unwrap();
-        let last = poly.last().copied().unwrap();
+        let first = epoly.first().copied().unwrap();
+        let last = epoly.last().copied().unwrap();
         let g = goals[i];
         let goal_pt = bary_on_face(&vertices, &faces, g.face, g.bary);
         assert!(
