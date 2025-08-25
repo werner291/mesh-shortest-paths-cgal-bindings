@@ -1,4 +1,4 @@
-use rust_cgal_shortest_paths::shortest_paths_barycentric;
+use rust_cgal_shortest_paths::{FaceBary, shortest_paths_barycentric};
 
 #[test]
 fn barycentric_source_and_goal() {
@@ -18,14 +18,17 @@ fn barycentric_source_and_goal() {
     let goal_face = 0usize;
     let goal_bary = [0.05, 0.9, 0.05];
 
-    let paths = shortest_paths_barycentric(
-        &vertices,
-        &faces,
-        source_face,
-        source_bary,
-        &[(goal_face, goal_bary)],
-    )
-    .expect("compute barycentric path");
+    let source = FaceBary {
+        face: source_face,
+        bary: source_bary,
+    };
+    let goals = vec![FaceBary {
+        face: goal_face,
+        bary: goal_bary,
+    }];
+
+    let paths = shortest_paths_barycentric(&vertices, &faces, source, &goals)
+        .expect("compute barycentric path");
 
     assert_eq!(paths.len(), 1);
     let poly = &paths[0];
@@ -96,10 +99,24 @@ fn triangle_vertex_to_vertices() {
     let source_face = 0usize;
     let source_bary = [1.0, 0.0, 0.0];
     // Goals at vertices v1 and v2 on face 0
-    let goals = vec![(0usize, [0.0, 1.0, 0.0]), (0usize, [0.0, 0.0, 1.0])];
+    let goals = vec![
+        FaceBary {
+            face: 0usize,
+            bary: [0.0, 1.0, 0.0],
+        },
+        FaceBary {
+            face: 0usize,
+            bary: [0.0, 0.0, 1.0],
+        },
+    ];
 
-    let paths = shortest_paths_barycentric(&vertices, &faces, source_face, source_bary, &goals)
-        .expect("compute paths");
+    let source = FaceBary {
+        face: source_face,
+        bary: source_bary,
+    };
+
+    let paths =
+        shortest_paths_barycentric(&vertices, &faces, source, &goals).expect("compute paths");
     assert_eq!(paths.len(), 2);
 
     // v0->v1 and v0->v2 endpoints should match; lengths may depend on polyline sampling
@@ -113,12 +130,12 @@ fn triangle_vertex_to_vertices() {
             + source_bary[2] * vertices[2][1],
         0.0,
     ];
-    for (i, &(gf, gb)) in goals.iter().enumerate() {
+    for (i, g) in goals.iter().enumerate() {
         let poly = &paths[i];
         assert!(poly.len() >= 2, "polyline has at least the endpoints");
         let first = poly.first().copied().unwrap();
         let last = poly.last().copied().unwrap();
-        let goal_pt = bary_on_face(&vertices, &faces, gf, gb);
+        let goal_pt = bary_on_face(&vertices, &faces, g.face, g.bary);
         // Accept either direction
         assert!(
             (approx_pt(first, source_pt, eps) && approx_pt(last, goal_pt, eps))
@@ -157,14 +174,16 @@ fn square_diagonal_across_faces() {
     let goal_face = 0usize;
     let goal_bary = [0.0, 0.0, 1.0];
 
-    let paths = shortest_paths_barycentric(
-        &vertices,
-        &faces,
-        source_face,
-        source_bary,
-        &[(goal_face, goal_bary)],
-    )
-    .expect("compute");
+    let source = FaceBary {
+        face: source_face,
+        bary: source_bary,
+    };
+    let goals = vec![FaceBary {
+        face: goal_face,
+        bary: goal_bary,
+    }];
+
+    let paths = shortest_paths_barycentric(&vertices, &faces, source, &goals).expect("compute");
     assert_eq!(paths.len(), 1);
     let poly = &paths[0];
     let eps = 1e-6;
@@ -203,13 +222,26 @@ fn square_multiple_goals_lengths() {
     let source_bary = [1.0, 0.0, 0.0];
     // Goals: v1 (face 0), v3 (face 1), v2 (face 0)
     let goals = vec![
-        (0usize, [0.0, 1.0, 0.0]), // v1
-        (1usize, [0.0, 0.0, 1.0]), // v3 in face [v0,v2,v3]
-        (0usize, [0.0, 0.0, 1.0]), // v2 in face [v0,v1,v2]
+        FaceBary {
+            face: 0usize,
+            bary: [0.0, 1.0, 0.0],
+        }, // v1
+        FaceBary {
+            face: 1usize,
+            bary: [0.0, 0.0, 1.0],
+        }, // v3 in face [v0,v2,v3]
+        FaceBary {
+            face: 0usize,
+            bary: [0.0, 0.0, 1.0],
+        }, // v2 in face [v0,v1,v2]
     ];
 
-    let paths = shortest_paths_barycentric(&vertices, &faces, source_face, source_bary, &goals)
-        .expect("compute");
+    let source = FaceBary {
+        face: source_face,
+        bary: source_bary,
+    };
+
+    let paths = shortest_paths_barycentric(&vertices, &faces, source, &goals).expect("compute");
     assert_eq!(paths.len(), goals.len());
 
     let expected = [1.0, 1.0, (2.0f64).sqrt()];
@@ -229,8 +261,8 @@ fn square_multiple_goals_lengths() {
         // endpoints (accept either order)
         let first = poly.first().copied().unwrap();
         let last = poly.last().copied().unwrap();
-        let (gf, gb) = goals[i];
-        let goal_pt = bary_on_face(&vertices, &faces, gf, gb);
+        let g = goals[i];
+        let goal_pt = bary_on_face(&vertices, &faces, g.face, g.bary);
         assert!(
             (approx_pt(first, source_pt, 1e-6) && approx_pt(last, goal_pt, 1e-6))
                 || (approx_pt(first, goal_pt, 1e-6) && approx_pt(last, source_pt, 1e-6)),
