@@ -2,6 +2,8 @@
 name = "rust_cgal_shortest_paths"
 version = "0.1.0"
 edition = "2024"
+license = "MIT-0"
+readme = "README.md"
 
 [lib]
 name = "rust_cgal_shortest_paths"
