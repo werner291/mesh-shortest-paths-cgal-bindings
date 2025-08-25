@@ -1,4 +1,62 @@
-use rust_cgal_shortest_paths::shortest_paths;
+use rust_cgal_shortest_paths::{shortest_paths, shortest_paths_barycentric};
+
+#[test]
+fn barycentric_source_and_goal() {
+    // Simple single triangle
+    let vertices = vec![
+        [0.0, 0.0, 0.0], // v0
+        [1.0, 0.0, 0.0], // v1
+        [0.0, 1.0, 0.0], // v2
+    ];
+    let faces = vec![[0u32, 1, 2]];
+
+    // Source at centroid (1/3,1/3,1/3)
+    let source_face = 0usize;
+    let source_bary = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
+
+    // Goal near vertex v1 but still interior
+    let goal_face = 0usize;
+    let goal_bary = [0.05, 0.9, 0.05];
+
+    let paths = shortest_paths_barycentric(
+        &vertices,
+        &faces,
+        source_face,
+        source_bary,
+        &[(goal_face, goal_bary)],
+    )
+    .expect("compute barycentric path");
+
+    assert_eq!(paths.len(), 1);
+    let poly = &paths[0];
+    assert!(poly.len() >= 2);
+
+    // Verify endpoints equal the evaluated barycentric points (within epsilon)
+    let src_pt = [
+        source_bary[0] * vertices[0][0]
+            + source_bary[1] * vertices[1][0]
+            + source_bary[2] * vertices[2][0],
+        source_bary[0] * vertices[0][1]
+            + source_bary[1] * vertices[1][1]
+            + source_bary[2] * vertices[2][1],
+        0.0,
+    ];
+    let goal_pt = [
+        goal_bary[0] * vertices[0][0]
+            + goal_bary[1] * vertices[1][0]
+            + goal_bary[2] * vertices[2][0],
+        goal_bary[0] * vertices[0][1]
+            + goal_bary[1] * vertices[1][1]
+            + goal_bary[2] * vertices[2][1],
+        0.0,
+    ];
+
+    let first = poly.first().copied().unwrap();
+    let last = poly.last().copied().unwrap();
+    let eps = 1e-6;
+    assert!(approx_pt(first, src_pt, eps));
+    assert!(approx_pt(last, goal_pt, eps));
+}
 
 fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     let dx = a[0] - b[0];

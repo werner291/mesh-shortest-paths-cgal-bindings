@@ -2,6 +2,10 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
+    // Re-run build script if these files change
+    println!("cargo:rerun-if-changed=cpp/cgal_sp.h");
+    println!("cargo:rerun-if-changed=cpp/cgal_sp.cpp");
+
     // Generate bindings
     let bindings = bindgen::Builder::default()
         .header("cpp/cgal_sp.h")
