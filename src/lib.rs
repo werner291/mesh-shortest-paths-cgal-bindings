@@ -59,6 +59,20 @@ pub fn group_events_to_traversals(
         .collect()
 }
 
+// Like group_events_to_traversals, but uses the mesh faces to properly handle Vertex events.
+// When a Vertex event occurs, we end the current segment at the corresponding 1-hot barycentric
+// coordinate on the current face, then continue from that vertex. This requires knowing which
+// vertex index corresponds to which corner of the current face.
+pub fn group_events_to_traversals_with_mesh(
+    faces: &[[u32; 3]],
+    event_paths: Vec<Vec<TraversalEvent>>,
+) -> Vec<Vec<FaceTraversal>> {
+    event_paths
+        .into_iter()
+        .map(|evs| single_event_path_to_traversals_with_mesh(faces, evs))
+        .collect()
+}
+
 fn single_event_path_to_traversals(events: Vec<TraversalEvent>) -> Vec<FaceTraversal> {
     let mut travs: Vec<FaceTraversal> = Vec::new();
     let mut current_face: Option<usize> = None;
@@ -131,6 +145,122 @@ fn single_event_path_to_traversals(events: Vec<TraversalEvent>) -> Vec<FaceTrave
             TraversalEvent::Vertex { .. } => {
                 // Vertex events are explicitly represented but not needed for FaceTraversal grouping
                 // We ignore them for traversal grouping purposes.
+            }
+        }
+    }
+
+    if let Some(cf) = current_face {
+        travs.push(FaceTraversal {
+            face: cf,
+            entry,
+            exit: last,
+        });
+    }
+
+    travs
+}
+
+fn single_event_path_to_traversals_with_mesh(
+    faces: &[[u32; 3]],
+    events: Vec<TraversalEvent>,
+) -> Vec<FaceTraversal> {
+    let mut travs: Vec<FaceTraversal> = Vec::new();
+    let mut current_face: Option<usize> = None;
+    let mut entry: [f64; 3] = [0.0; 3];
+    let mut last: [f64; 3] = [0.0; 3];
+
+    for ev in events.into_iter() {
+        match ev {
+            TraversalEvent::BaryPoint { face, bary } => match current_face {
+                None => {
+                    current_face = Some(face);
+                    entry = bary;
+                    last = bary;
+                }
+                Some(cf) if cf == face => {
+                    last = bary;
+                }
+                Some(cf) => {
+                    // close previous face run
+                    travs.push(FaceTraversal {
+                        face: cf,
+                        entry,
+                        exit: last,
+                    });
+                    current_face = Some(face);
+                    entry = bary;
+                    last = bary;
+                }
+            },
+            TraversalEvent::Edge {
+                from_face,
+                from_bary,
+                to_face,
+                to_bary,
+            } => {
+                // Align current context to from_face at from_bary
+                match current_face {
+                    None => {
+                        current_face = Some(from_face);
+                        entry = from_bary;
+                        last = from_bary;
+                    }
+                    Some(cf) if cf == from_face => {
+                        last = from_bary;
+                    }
+                    Some(cf) => {
+                        travs.push(FaceTraversal {
+                            face: cf,
+                            entry,
+                            exit: last,
+                        });
+                        current_face = Some(from_face);
+                        entry = from_bary;
+                        last = from_bary;
+                    }
+                }
+                // finish segment on from_face to the edge point
+                if let Some(cf) = current_face {
+                    travs.push(FaceTraversal {
+                        face: cf,
+                        entry,
+                        exit: last,
+                    });
+                }
+                // switch to next face at to_bary
+                current_face = Some(to_face);
+                entry = to_bary;
+                last = to_bary;
+            }
+            TraversalEvent::Vertex { vertex } => {
+                if let Some(cf) = current_face {
+                    // map vertex index to 1-hot bary on this face if present
+                    let fv = faces[cf];
+                    let one_hot = if fv[0] as usize == vertex {
+                        Some([1.0, 0.0, 0.0])
+                    } else if fv[1] as usize == vertex {
+                        Some([0.0, 1.0, 0.0])
+                    } else if fv[2] as usize == vertex {
+                        Some([0.0, 0.0, 1.0])
+                    } else {
+                        None
+                    };
+                    if let Some(vb) = one_hot {
+                        // Close current segment up to last, then start a new run from the vertex
+                        travs.push(FaceTraversal {
+                            face: cf,
+                            entry,
+                            exit: last,
+                        });
+                        entry = vb;
+                        last = vb;
+                        // keep current_face unchanged
+                    } else {
+                        panic!("Vertex {} not on current face {}", vertex, cf);
+                    }
+                } else {
+                    // No current face yet; ignore until we get context
+                }
             }
         }
     }

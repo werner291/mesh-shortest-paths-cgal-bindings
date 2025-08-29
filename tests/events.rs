@@ -99,7 +99,7 @@ fn group_events_simple_sequences() {
         }
     );
 
-    // Case 4: vertex events must be ignored for grouping
+    // Case 4: vertex events split the run at the vertex; needs mesh faces to map vertex->corner
     let events4 = vec![
         TraversalEvent::BaryPoint {
             face: 1,
@@ -111,13 +111,23 @@ fn group_events_simple_sequences() {
             bary: [0.7, 0.2, 0.1],
         },
     ];
-    let grouped4 = group_single(events4);
-    assert_eq!(grouped4.len(), 1);
+    // faces[1] must contain vertex 42 in position 1 => one-hot [0,1,0]
+    let faces = vec![[0u32, 1, 2], [10, 42, 7], [3, 4, 5]];
+    let grouped4 = group_single_with_mesh(&faces, events4);
+    assert_eq!(grouped4.len(), 2);
     assert_eq!(
         grouped4[0],
         FaceTraversal {
             face: 1,
             entry: [0.8, 0.1, 0.1],
+            exit: [0.0, 1.0, 0.0]
+        }
+    );
+    assert_eq!(
+        grouped4[1],
+        FaceTraversal {
+            face: 1,
+            entry: [0.0, 1.0, 0.0],
             exit: [0.7, 0.2, 0.1]
         }
     );
@@ -128,6 +138,13 @@ fn group_single(events: Vec<TraversalEvent>) -> Vec<FaceTraversal> {
     // The helper keeps the test focused and avoids FFI interactions.
     let paths = vec![events];
     let out = rust_cgal_shortest_paths::group_events_to_traversals(paths);
+    assert_eq!(out.len(), 1);
+    out.into_iter().next().unwrap()
+}
+
+fn group_single_with_mesh(faces: &[[u32; 3]], events: Vec<TraversalEvent>) -> Vec<FaceTraversal> {
+    let paths = vec![events];
+    let out = rust_cgal_shortest_paths::group_events_to_traversals_with_mesh(faces, paths);
     assert_eq!(out.len(), 1);
     out.into_iter().next().unwrap()
 }
