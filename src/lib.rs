@@ -315,45 +315,6 @@ fn single_bary_path_to_traversals(poly: Vec<FaceBary>) -> Vec<FaceTraversal> {
     travs
 }
 
-unsafe fn read_bary_paths(
-    out_paths: *mut *mut ffi::sp_face_bary,
-    out_sizes: *mut usize,
-    count: usize,
-) -> Vec<Vec<FaceBary>> {
-    // Guard to free C allocations even if a panic occurs while materializing results.
-    struct PathsGuard {
-        paths: *mut *mut ffi::sp_face_bary,
-        sizes: *mut usize,
-        count: usize,
-    }
-    impl Drop for PathsGuard {
-        fn drop(&mut self) {
-            unsafe { ffi::sp_free_bary_paths(self.paths, self.sizes, self.count) }
-        }
-    }
-    let guard = PathsGuard {
-        paths: out_paths,
-        sizes: out_sizes,
-        count,
-    };
-    let mut bary_paths: Vec<Vec<FaceBary>> = Vec::with_capacity(count);
-    let sizes_slice = std::slice::from_raw_parts(guard.sizes, guard.count);
-    let paths_slice = std::slice::from_raw_parts(guard.paths, guard.count);
-    for i in 0..guard.count {
-        let n = sizes_slice[i];
-        let items = std::slice::from_raw_parts(paths_slice[i], n);
-        let mut poly = Vec::with_capacity(n);
-        for it in items {
-            poly.push(FaceBary {
-                face: it.face as usize,
-                bary: [it.b0, it.b1, it.b2],
-            });
-        }
-        bary_paths.push(poly);
-    }
-    bary_paths
-}
-
 unsafe fn read_event_paths(
     out_paths: *mut *mut ffi::sp_event,
     out_sizes: *mut usize,
