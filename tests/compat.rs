@@ -85,6 +85,69 @@ fn compatibility_layer_larger_mesh_endpoints_and_counts() {
         Points3(&goals),
     )
     .expect("compute paths");
+
+    // Validate consecutive traversals continuity (accept either global direction) for each path
+    for (i, poly) in bary_paths.iter().enumerate() {
+        for k in 1..poly.len() {
+            let prev = poly[k - 1];
+            let next = poly[k];
+            let [i0, i1, i2] = faces[prev.face];
+            let a = vertices[i0 as usize];
+            let b = vertices[i1 as usize];
+            let c = vertices[i2 as usize];
+            let p_prev_exit = [
+                prev.exit[0] * a[0] + prev.exit[1] * b[0] + prev.exit[2] * c[0],
+                prev.exit[0] * a[1] + prev.exit[1] * b[1] + prev.exit[2] * c[1],
+                prev.exit[0] * a[2] + prev.exit[1] * b[2] + prev.exit[2] * c[2],
+            ];
+            let p_prev_entry = [
+                prev.entry[0] * a[0] + prev.entry[1] * b[0] + prev.entry[2] * c[0],
+                prev.entry[0] * a[1] + prev.entry[1] * b[1] + prev.entry[2] * c[1],
+                prev.entry[0] * a[2] + prev.entry[1] * b[2] + prev.entry[2] * c[2],
+            ];
+            let [j0, j1, j2] = faces[next.face];
+            let a2 = vertices[j0 as usize];
+            let b2 = vertices[j1 as usize];
+            let c2 = vertices[j2 as usize];
+            let p_next_entry = [
+                next.entry[0] * a2[0] + next.entry[1] * b2[0] + next.entry[2] * c2[0],
+                next.entry[0] * a2[1] + next.entry[1] * b2[1] + next.entry[2] * c2[1],
+                next.entry[0] * a2[2] + next.entry[1] * b2[2] + next.entry[2] * c2[2],
+            ];
+            let p_next_exit = [
+                next.exit[0] * a2[0] + next.exit[1] * b2[0] + next.exit[2] * c2[0],
+                next.exit[0] * a2[1] + next.exit[1] * b2[1] + next.exit[2] * c2[1],
+                next.exit[0] * a2[2] + next.exit[1] * b2[2] + next.exit[2] * c2[2],
+            ];
+            let fwd = approx_pt(p_prev_exit, p_next_entry, 1e-9);
+            let bwd = approx_pt(p_prev_entry, p_next_exit, 1e-9);
+            if !(fwd || bwd) {
+                // Allow degenerate-at-endpoint pairs (library may only emit endpoints)
+                let deg_prev = approx_pt(p_prev_entry, p_prev_exit, 1e-12);
+                let deg_next = approx_pt(p_next_entry, p_next_exit, 1e-12);
+                let src_snap = src_snap; // already computed above
+                let gsnap = goal_snaps[i];
+                let prev_is_src = approx_pt(p_prev_entry, src_snap, 1e-12)
+                    && approx_pt(p_prev_exit, src_snap, 1e-12);
+                let next_is_goal =
+                    approx_pt(p_next_entry, gsnap, 1e-12) && approx_pt(p_next_exit, gsnap, 1e-12);
+                if !(deg_prev && deg_next && prev_is_src && next_is_goal) {
+                    panic!(
+                        "consecutive traversal mismatch at path {} segment {}: prev(face={}, entry={:?}, exit={:?}) next(face={}, entry={:?}, exit={:?})",
+                        i,
+                        k - 1,
+                        prev.face,
+                        prev.entry,
+                        prev.exit,
+                        next.face,
+                        next.entry,
+                        next.exit
+                    );
+                }
+            }
+        }
+    }
+
     // Convert traversal sequences to Euclidean locally for verification
     let paths: Vec<Vec<[f64; 3]>> = bary_paths
         .iter()
