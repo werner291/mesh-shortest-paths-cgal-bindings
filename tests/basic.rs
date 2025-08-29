@@ -1,4 +1,4 @@
-use rust_cgal_shortest_paths::{FaceBary, shortest_paths_barycentric};
+use rust_cgal_shortest_paths::{FaceBary, FaceTraversal, shortest_paths_barycentric};
 
 #[test]
 fn barycentric_source_and_goal() {
@@ -32,10 +32,9 @@ fn barycentric_source_and_goal() {
 
     assert_eq!(paths.len(), 1);
     let poly = &paths[0];
-    assert!(poly.len() >= 2);
-
-    // Convert barycentric polyline to Euclidean for verification only
+    // Convert traversal sequence to Euclidean for verification only
     let epoly = bary_poly_to_euclid(&vertices, &faces, poly);
+    assert!(epoly.len() >= 2);
 
     // Verify endpoints equal the evaluated barycentric points (within epsilon)
     let src_pt = bary_on_face(&vertices, &faces, source_face, source_bary);
@@ -88,24 +87,37 @@ fn approx_pt(a: [f64; 3], b: [f64; 3], eps: f64) -> bool {
     dist(a, b) <= eps
 }
 
-// Convert a polyline of FaceBary to Euclidean points using the mesh
+// Convert a sequence of FaceTraversal to Euclidean points using the mesh.
+// We sample the entry of each traversal and append the exit of the last traversal.
 fn bary_poly_to_euclid(
     vertices: &[[f64; 3]],
     faces: &[[u32; 3]],
-    poly: &[FaceBary],
+    travs: &[FaceTraversal],
 ) -> Vec<[f64; 3]> {
-    let mut out = Vec::with_capacity(poly.len());
-    for fb in poly.iter() {
-        let [i0, i1, i2] = faces[fb.face];
+    let mut out: Vec<[f64; 3]> = Vec::new();
+    if travs.is_empty() {
+        return out;
+    }
+    for (idx, t) in travs.iter().enumerate() {
+        // push entry for each traversal
+        let [i0, i1, i2] = faces[t.face];
         let a = vertices[i0 as usize];
         let b = vertices[i1 as usize];
         let c = vertices[i2 as usize];
-        let p = [
-            fb.bary[0] * a[0] + fb.bary[1] * b[0] + fb.bary[2] * c[0],
-            fb.bary[0] * a[1] + fb.bary[1] * b[1] + fb.bary[2] * c[1],
-            fb.bary[0] * a[2] + fb.bary[1] * b[2] + fb.bary[2] * c[2],
+        let e = [
+            t.entry[0] * a[0] + t.entry[1] * b[0] + t.entry[2] * c[0],
+            t.entry[0] * a[1] + t.entry[1] * b[1] + t.entry[2] * c[1],
+            t.entry[0] * a[2] + t.entry[1] * b[2] + t.entry[2] * c[2],
         ];
-        out.push(p);
+        out.push(e);
+        if idx + 1 == travs.len() {
+            let x = [
+                t.exit[0] * a[0] + t.exit[1] * b[0] + t.exit[2] * c[0],
+                t.exit[0] * a[1] + t.exit[1] * b[1] + t.exit[2] * c[1],
+                t.exit[0] * a[2] + t.exit[1] * b[2] + t.exit[2] * c[2],
+            ];
+            out.push(x);
+        }
     }
     out
 }
@@ -157,8 +169,8 @@ fn triangle_vertex_to_vertices() {
     ];
     for (i, g) in goals.iter().enumerate() {
         let poly = &paths[i];
-        assert!(poly.len() >= 2, "polyline has at least the endpoints");
         let epoly = bary_poly_to_euclid(&vertices, &faces, poly);
+        assert!(epoly.len() >= 2, "polyline has at least the endpoints");
         let first = epoly.first().copied().unwrap();
         let last = epoly.last().copied().unwrap();
         let goal_pt = bary_on_face(&vertices, &faces, g.face, g.bary);
@@ -214,6 +226,7 @@ fn square_diagonal_across_faces() {
     let poly = &paths[0];
     let eps = 1e-6;
     let epoly = bary_poly_to_euclid(&vertices, &faces, poly);
+    assert!(epoly.len() >= 2);
     let first = epoly.first().copied().unwrap();
     let last = epoly.last().copied().unwrap();
 
@@ -276,6 +289,7 @@ fn square_multiple_goals_lengths() {
     for i in 0..goals.len() {
         let poly = &paths[i];
         let epoly = bary_poly_to_euclid(&vertices, &faces, poly);
+        assert!(epoly.len() >= 2, "polyline has at least the endpoints");
         let len = polyline_len(&epoly);
         // Only convert to Euclidean for verification; accept algorithmic polyline sampling
         assert!(len >= 0.0, "length should be non-negative");

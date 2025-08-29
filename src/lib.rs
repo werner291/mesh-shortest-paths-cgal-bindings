@@ -22,6 +22,16 @@ pub struct FaceBary {
     pub bary: [f64; 3],
 }
 
+/// A traversal across a single face, given by entry and exit barycentric
+/// coordinates on that face. The first traversal's entry is the overall start
+/// and the last traversal's exit is the overall end.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FaceTraversal {
+    pub face: usize,
+    pub entry: [f64; 3],
+    pub exit: [f64; 3],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vertices<'a>(pub &'a [[f64; 3]]);
 
@@ -39,7 +49,7 @@ pub fn shortest_paths(
     faces: Faces,
     source: Point3,
     goals: Points3,
-) -> Result<Vec<Vec<FaceBary>>, String> {
+) -> Result<Vec<Vec<FaceTraversal>>, String> {
     // Flatten inputs for C++ mesh construction
     let mut verts_flat = Vec::with_capacity(vertices.0.len() * 3);
     for v in vertices.0.iter() {
@@ -147,7 +157,7 @@ pub fn shortest_paths(
         ));
     }
 
-    // Read back barycentric paths directly
+    // Read back barycentric paths directly, then convert into FaceTraversal per face
     let mut bary_paths: Vec<Vec<FaceBary>> = Vec::with_capacity(goals.0.len());
     struct PathsGuard {
         paths: *mut *mut ffi::sp_face_bary,
@@ -180,7 +190,38 @@ pub fn shortest_paths(
             bary_paths.push(poly);
         }
     }
-    Ok(bary_paths)
+    // Convert to traversals: group consecutive states with the same face
+    let mut trav_paths: Vec<Vec<FaceTraversal>> = Vec::with_capacity(bary_paths.len());
+    for poly in bary_paths.into_iter() {
+        let mut travs: Vec<FaceTraversal> = Vec::new();
+        if !poly.is_empty() {
+            let mut current_face = poly[0].face;
+            let mut entry = poly[0].bary;
+            let mut last = poly[0].bary;
+            for fb in poly.into_iter().skip(1) {
+                if fb.face == current_face {
+                    last = fb.bary;
+                } else {
+                    travs.push(FaceTraversal {
+                        face: current_face,
+                        entry,
+                        exit: last,
+                    });
+                    current_face = fb.face;
+                    entry = fb.bary;
+                    last = fb.bary;
+                }
+            }
+            // push last run
+            travs.push(FaceTraversal {
+                face: current_face,
+                entry,
+                exit: last,
+            });
+        }
+        trav_paths.push(travs);
+    }
+    Ok(trav_paths)
 }
 
 /// Convenience adapter for meshes provided by the `geometry` crate.
@@ -197,7 +238,7 @@ pub fn shortest_paths_barycentric(
     faces: &[[u32; 3]],
     source: FaceBary,
     goals: &[FaceBary],
-) -> Result<Vec<Vec<FaceBary>>, String> {
+) -> Result<Vec<Vec<FaceTraversal>>, String> {
     // Flatten inputs
     let mut verts_flat = Vec::with_capacity(vertices.len() * 3);
     for v in vertices {
@@ -274,7 +315,7 @@ pub fn shortest_paths_barycentric(
         ));
     }
 
-    // Read back barycentric paths directly
+    // Read back barycentric paths directly, then group into FaceTraversal
     let mut bary_paths: Vec<Vec<FaceBary>> = Vec::with_capacity(goals.len());
 
     // Guard to free C allocations even if a panic occurs while materializing results.
@@ -311,5 +352,35 @@ pub fn shortest_paths_barycentric(
         }
     }
 
-    Ok(bary_paths)
+    let mut trav_paths: Vec<Vec<FaceTraversal>> = Vec::with_capacity(bary_paths.len());
+    for poly in bary_paths.into_iter() {
+        let mut travs: Vec<FaceTraversal> = Vec::new();
+        if !poly.is_empty() {
+            let mut current_face = poly[0].face;
+            let mut entry = poly[0].bary;
+            let mut last = poly[0].bary;
+            for fb in poly.into_iter().skip(1) {
+                if fb.face == current_face {
+                    last = fb.bary;
+                } else {
+                    travs.push(FaceTraversal {
+                        face: current_face,
+                        entry,
+                        exit: last,
+                    });
+                    current_face = fb.face;
+                    entry = fb.bary;
+                    last = fb.bary;
+                }
+            }
+            travs.push(FaceTraversal {
+                face: current_face,
+                entry,
+                exit: last,
+            });
+        }
+        trav_paths.push(travs);
+    }
+
+    Ok(trav_paths)
 }

@@ -1,4 +1,4 @@
-use rust_cgal_shortest_paths::{FaceBary, Faces, Point3, Points3, Vertices, shortest_paths};
+use rust_cgal_shortest_paths::{FaceTraversal, Faces, Point3, Points3, Vertices, shortest_paths};
 
 fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     let dx = a[0] - b[0];
@@ -85,23 +85,35 @@ fn compatibility_layer_larger_mesh_endpoints_and_counts() {
         Points3(&goals),
     )
     .expect("compute paths");
-    // Convert barycentric polylines to Euclidean locally for verification
+    // Convert traversal sequences to Euclidean locally for verification
     let paths: Vec<Vec<[f64; 3]>> = bary_paths
         .iter()
-        .map(|poly: &Vec<FaceBary>| {
-            poly.iter()
-                .map(|fb| {
-                    let [i0, i1, i2] = faces[fb.face];
-                    let a = vertices[i0 as usize];
-                    let b = vertices[i1 as usize];
-                    let c = vertices[i2 as usize];
-                    [
-                        fb.bary[0] * a[0] + fb.bary[1] * b[0] + fb.bary[2] * c[0],
-                        fb.bary[0] * a[1] + fb.bary[1] * b[1] + fb.bary[2] * c[1],
-                        fb.bary[0] * a[2] + fb.bary[1] * b[2] + fb.bary[2] * c[2],
-                    ]
-                })
-                .collect()
+        .map(|poly: &Vec<FaceTraversal>| {
+            let mut out: Vec<[f64; 3]> = Vec::new();
+            if poly.is_empty() {
+                return out;
+            }
+            for (idx, t) in poly.iter().enumerate() {
+                let [i0, i1, i2] = faces[t.face];
+                let a = vertices[i0 as usize];
+                let b = vertices[i1 as usize];
+                let c = vertices[i2 as usize];
+                let e = [
+                    t.entry[0] * a[0] + t.entry[1] * b[0] + t.entry[2] * c[0],
+                    t.entry[0] * a[1] + t.entry[1] * b[1] + t.entry[2] * c[1],
+                    t.entry[0] * a[2] + t.entry[1] * b[2] + t.entry[2] * c[2],
+                ];
+                out.push(e);
+                if idx + 1 == poly.len() {
+                    let x = [
+                        t.exit[0] * a[0] + t.exit[1] * b[0] + t.exit[2] * c[0],
+                        t.exit[0] * a[1] + t.exit[1] * b[1] + t.exit[2] * c[1],
+                        t.exit[0] * a[2] + t.exit[1] * b[2] + t.exit[2] * c[2],
+                    ];
+                    out.push(x);
+                }
+            }
+            out
         })
         .collect();
 
