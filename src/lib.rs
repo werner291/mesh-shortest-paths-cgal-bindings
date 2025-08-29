@@ -32,6 +32,80 @@ pub struct FaceTraversal {
     pub exit: [f64; 3],
 }
 
+// Internal helpers to reduce duplication
+fn group_bary_to_traversals(bary_paths: Vec<Vec<FaceBary>>) -> Vec<Vec<FaceTraversal>> {
+    let mut trav_paths: Vec<Vec<FaceTraversal>> = Vec::with_capacity(bary_paths.len());
+    for poly in bary_paths.into_iter() {
+        let mut travs: Vec<FaceTraversal> = Vec::new();
+        if !poly.is_empty() {
+            let mut current_face = poly[0].face;
+            let mut entry = poly[0].bary;
+            let mut last = poly[0].bary;
+            for fb in poly.into_iter().skip(1) {
+                if fb.face == current_face {
+                    last = fb.bary;
+                } else {
+                    travs.push(FaceTraversal {
+                        face: current_face,
+                        entry,
+                        exit: last,
+                    });
+                    current_face = fb.face;
+                    entry = fb.bary;
+                    last = fb.bary;
+                }
+            }
+            // push last run
+            travs.push(FaceTraversal {
+                face: current_face,
+                entry,
+                exit: last,
+            });
+        }
+        trav_paths.push(travs);
+    }
+    trav_paths
+}
+
+unsafe fn read_bary_paths(
+    out_paths: *mut *mut ffi::sp_face_bary,
+    out_sizes: *mut usize,
+    count: usize,
+) -> Vec<Vec<FaceBary>> {
+    // Guard to free C allocations even if a panic occurs while materializing results.
+    struct PathsGuard {
+        paths: *mut *mut ffi::sp_face_bary,
+        sizes: *mut usize,
+        count: usize,
+    }
+    impl Drop for PathsGuard {
+        fn drop(&mut self) {
+            unsafe { ffi::sp_free_bary_paths(self.paths, self.sizes, self.count) }
+        }
+    }
+    let guard = PathsGuard {
+        paths: out_paths,
+        sizes: out_sizes,
+        count,
+    };
+    let mut bary_paths: Vec<Vec<FaceBary>> = Vec::with_capacity(count);
+    let sizes_slice = std::slice::from_raw_parts(guard.sizes, guard.count);
+    let paths_slice = std::slice::from_raw_parts(guard.paths, guard.count);
+    for i in 0..guard.count {
+        let n = sizes_slice[i];
+        let items = std::slice::from_raw_parts(paths_slice[i], n);
+        let mut poly = Vec::with_capacity(n);
+        for it in items {
+            poly.push(FaceBary {
+                face: it.face as usize,
+                bary: [it.b0, it.b1, it.b2],
+            });
+        }
+        bary_paths.push(poly);
+    }
+    bary_paths
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vertices<'a>(pub &'a [[f64; 3]]);
 
@@ -158,69 +232,9 @@ pub fn shortest_paths(
     }
 
     // Read back barycentric paths directly, then convert into FaceTraversal per face
-    let mut bary_paths: Vec<Vec<FaceBary>> = Vec::with_capacity(goals.0.len());
-    struct PathsGuard {
-        paths: *mut *mut ffi::sp_face_bary,
-        sizes: *mut usize,
-        count: usize,
-    }
-    impl Drop for PathsGuard {
-        fn drop(&mut self) {
-            unsafe { ffi::sp_free_bary_paths(self.paths, self.sizes, self.count) }
-        }
-    }
-    let guard = PathsGuard {
-        paths: out_paths,
-        sizes: out_sizes,
-        count: goals.0.len(),
-    };
-    unsafe {
-        let sizes_slice = std::slice::from_raw_parts(guard.sizes, guard.count);
-        let paths_slice = std::slice::from_raw_parts(guard.paths, guard.count);
-        for i in 0..guard.count {
-            let n = sizes_slice[i];
-            let items = std::slice::from_raw_parts(paths_slice[i], n);
-            let mut poly = Vec::with_capacity(n);
-            for it in items {
-                poly.push(FaceBary {
-                    face: it.face as usize,
-                    bary: [it.b0, it.b1, it.b2],
-                });
-            }
-            bary_paths.push(poly);
-        }
-    }
-    // Convert to traversals: group consecutive states with the same face
-    let mut trav_paths: Vec<Vec<FaceTraversal>> = Vec::with_capacity(bary_paths.len());
-    for poly in bary_paths.into_iter() {
-        let mut travs: Vec<FaceTraversal> = Vec::new();
-        if !poly.is_empty() {
-            let mut current_face = poly[0].face;
-            let mut entry = poly[0].bary;
-            let mut last = poly[0].bary;
-            for fb in poly.into_iter().skip(1) {
-                if fb.face == current_face {
-                    last = fb.bary;
-                } else {
-                    travs.push(FaceTraversal {
-                        face: current_face,
-                        entry,
-                        exit: last,
-                    });
-                    current_face = fb.face;
-                    entry = fb.bary;
-                    last = fb.bary;
-                }
-            }
-            // push last run
-            travs.push(FaceTraversal {
-                face: current_face,
-                entry,
-                exit: last,
-            });
-        }
-        trav_paths.push(travs);
-    }
+    let bary_paths: Vec<Vec<FaceBary>> =
+        unsafe { read_bary_paths(out_paths, out_sizes, goals.0.len()) };
+    let trav_paths: Vec<Vec<FaceTraversal>> = group_bary_to_traversals(bary_paths);
     Ok(trav_paths)
 }
 
@@ -316,71 +330,10 @@ pub fn shortest_paths_barycentric(
     }
 
     // Read back barycentric paths directly, then group into FaceTraversal
-    let mut bary_paths: Vec<Vec<FaceBary>> = Vec::with_capacity(goals.len());
+    let bary_paths: Vec<Vec<FaceBary>> =
+        unsafe { read_bary_paths(out_paths, out_sizes, goals.len()) };
 
-    // Guard to free C allocations even if a panic occurs while materializing results.
-    struct PathsGuard {
-        paths: *mut *mut ffi::sp_face_bary,
-        sizes: *mut usize,
-        count: usize,
-    }
-    impl Drop for PathsGuard {
-        fn drop(&mut self) {
-            unsafe { ffi::sp_free_bary_paths(self.paths, self.sizes, self.count) }
-        }
-    }
-    let guard = PathsGuard {
-        paths: out_paths,
-        sizes: out_sizes,
-        count: goals.len(),
-    };
-
-    unsafe {
-        let sizes_slice = std::slice::from_raw_parts(guard.sizes, guard.count);
-        let paths_slice = std::slice::from_raw_parts(guard.paths, guard.count);
-        for i in 0..guard.count {
-            let n = sizes_slice[i];
-            let items = std::slice::from_raw_parts(paths_slice[i], n);
-            let mut poly = Vec::with_capacity(n);
-            for it in items {
-                poly.push(FaceBary {
-                    face: it.face as usize,
-                    bary: [it.b0, it.b1, it.b2],
-                });
-            }
-            bary_paths.push(poly);
-        }
-    }
-
-    let mut trav_paths: Vec<Vec<FaceTraversal>> = Vec::with_capacity(bary_paths.len());
-    for poly in bary_paths.into_iter() {
-        let mut travs: Vec<FaceTraversal> = Vec::new();
-        if !poly.is_empty() {
-            let mut current_face = poly[0].face;
-            let mut entry = poly[0].bary;
-            let mut last = poly[0].bary;
-            for fb in poly.into_iter().skip(1) {
-                if fb.face == current_face {
-                    last = fb.bary;
-                } else {
-                    travs.push(FaceTraversal {
-                        face: current_face,
-                        entry,
-                        exit: last,
-                    });
-                    current_face = fb.face;
-                    entry = fb.bary;
-                    last = fb.bary;
-                }
-            }
-            travs.push(FaceTraversal {
-                face: current_face,
-                entry,
-                exit: last,
-            });
-        }
-        trav_paths.push(travs);
-    }
+    let trav_paths: Vec<Vec<FaceTraversal>> = group_bary_to_traversals(bary_paths);
 
     Ok(trav_paths)
 }
