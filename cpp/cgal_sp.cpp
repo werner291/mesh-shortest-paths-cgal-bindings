@@ -156,75 +156,6 @@ void sp_destroy(sp_context* ctx) {
     delete ctx;
 }
 
-int sp_set_source(sp_context* ctx, double x, double y, double z) {
-    if (!ctx) return 1;
-    try {
-        Point_3 p(x,y,z);
-        vertex_descriptor v = nearest_vertex(ctx->mesh, p);
-        // Reset the data and set the single source
-        ctx->sssp.clear();
-        ctx->sssp.add_source_point(v);
-        ctx->source_v = v;
-        ctx->source_p = ctx->mesh.point(v);
-        ctx->has_source = true;
-        return 0;
-    } catch (...) { return 2; }
-}
-
-int sp_compute_paths(sp_context* ctx,
-                     const double* goal_xyz, size_t goal_count,
-                     sp_point3*** out_paths,
-                     size_t** out_sizes) {
-    if (!ctx || !out_paths || !out_sizes) return 1;
-    try {
-        sp_point3** paths = static_cast<sp_point3**>(::operator new[](goal_count * sizeof(sp_point3*)));
-        size_t* sizes = static_cast<size_t*>(::operator new[](goal_count * sizeof(size_t)));
-
-        for (size_t i = 0; i < goal_count; ++i) {
-            const double* g = &goal_xyz[3*i];
-            Point_3 gp(g[0], g[1], g[2]);
-            vertex_descriptor gv = nearest_vertex(ctx->mesh, gp);
-
-            std::vector<Point_3> poly;
-            ctx->sssp.shortest_path_points_to_source_points(gv, std::back_inserter(poly));
-            // CGAL returns points from goal to source; reverse to have source -> goal
-            std::reverse(poly.begin(), poly.end());
-
-            // Ensure the polyline starts at the exact stored source point and ends at the goal vertex point
-            if (ctx->has_source) {
-                if (poly.empty() || poly.front() != ctx->source_p) {
-                    poly.insert(poly.begin(), ctx->source_p);
-                }
-            }
-            Point_3 goal_p = ctx->mesh.point(gv);
-            if (poly.empty() || poly.back() != goal_p) {
-                poly.push_back(goal_p);
-            }
-
-            sizes[i] = poly.size();
-            sp_point3* arr = static_cast<sp_point3*>(::operator new[](sizes[i] * sizeof(sp_point3)));
-            for (size_t j = 0; j < sizes[i]; ++j) {
-                arr[j].x = poly[j].x();
-                arr[j].y = poly[j].y();
-                arr[j].z = poly[j].z();
-            }
-            paths[i] = arr;
-        }
-
-        *out_paths = paths;
-        *out_sizes = sizes;
-        return 0;
-    } catch (...) { return 2; }
-}
-
-void sp_free_paths(sp_point3** paths, size_t* sizes, size_t goal_count) {
-    if (!paths || !sizes) return;
-    for (size_t i = 0; i < goal_count; ++i) {
-        ::operator delete[](paths[i]);
-    }
-    ::operator delete[](paths);
-    ::operator delete[](sizes);
-}
 
 int sp_set_source_bary(sp_context* ctx, size_t face_index, double b0, double b1, double b2) {
     if (!ctx) return 1;
@@ -246,58 +177,6 @@ int sp_set_source_bary(sp_context* ctx, size_t face_index, double b0, double b1,
     } catch (...) { return 2; }
 }
 
-int sp_compute_paths_bary(sp_context* ctx,
-                          const size_t* face_indices,
-                          const double* bary_coords,
-                          size_t goal_count,
-                          sp_point3*** out_paths,
-                          size_t** out_sizes) {
-    if (!ctx || !face_indices || !bary_coords || !out_paths || !out_sizes) return 1;
-    try {
-        sp_point3** paths = static_cast<sp_point3**>(::operator new[](goal_count * sizeof(sp_point3*)));
-        size_t* sizes = static_cast<size_t*>(::operator new[](goal_count * sizeof(size_t)));
-        for (size_t i = 0; i < goal_count; ++i) {
-            size_t fi = face_indices[i];
-            double b0 = bary_coords[3*i+0];
-            double b1 = bary_coords[3*i+1];
-            double b2 = bary_coords[3*i+2];
-            if (fi >= ctx->faces.size() || !is_valid_bary(b0,b1,b2)) {
-                // allocate empty polyline for invalid entry
-                sizes[i] = 0;
-                paths[i] = nullptr;
-                continue;
-            }
-            face_descriptor f = ctx->faces[fi];
-            Point_3 gp = bary_to_point(f, ctx->mesh, b0,b1,b2);
-            Traits::Barycentric_coordinates bc = {{b0, b1, b2}};
-
-            std::vector<Point_3> poly;
-            ctx->sssp.shortest_path_points_to_source_points(f, bc, std::back_inserter(poly));
-            std::reverse(poly.begin(), poly.end());
-
-            if (ctx->has_source) {
-                if (poly.empty() || poly.front() != ctx->source_p) {
-                    poly.insert(poly.begin(), ctx->source_p);
-                }
-            }
-            if (poly.empty() || poly.back() != gp) {
-                poly.push_back(gp);
-            }
-
-            sizes[i] = poly.size();
-            sp_point3* arr = static_cast<sp_point3*>(::operator new[](sizes[i] * sizeof(sp_point3)));
-            for (size_t j = 0; j < sizes[i]; ++j) {
-                arr[j].x = poly[j].x();
-                arr[j].y = poly[j].y();
-                arr[j].z = poly[j].z();
-            }
-            paths[i] = arr;
-        }
-        *out_paths = paths;
-        *out_sizes = sizes;
-        return 0;
-    } catch (...) { return 2; }
-}
 
 // Helper: find input face index for a face_descriptor
 static size_t face_index_of(const sp_context* ctx, face_descriptor f) {
