@@ -9,10 +9,6 @@ readme = "README.md"
 name = "rust_cgal_shortest_paths"
 path = "src/lib.rs"
 
-[[bin]]
-name = "rust_cgal_shortest_paths_bin"
-path = "src/main.rs"
-
 [dependencies]
 
 
