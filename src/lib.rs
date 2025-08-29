@@ -357,15 +357,11 @@ pub fn shortest_paths_barycentric(
         bary_flat.extend_from_slice(&[g.bary[0], g.bary[1], g.bary[2]]);
     }
 
-    let mut out_paths: *mut *mut ffi::sp_point3 = std::ptr::null_mut();
+    let mut out_paths: *mut *mut ffi::sp_face_bary = std::ptr::null_mut();
     let mut out_sizes: *mut usize = std::ptr::null_mut();
-    // SAFETY: Follows the FFI contract for the barycentric variant:
-    // - `ctx.0` is a valid context.
-    // - `face_indices.as_ptr()` and `bary_flat.as_ptr()` point to contiguous arrays with at least `goals.len()` and
-    //    `goals.len()*3` elements respectively, alive for the duration of the call; the callee only reads from them.
-    // - `out_paths` and `out_sizes` are valid out-pointers and will receive ownership of allocations on success.
+    // SAFETY: We pass valid pointers to contiguous arrays of faces and barycentric coordinates.
     let rc = unsafe {
-        ffi::sp_compute_paths_bary(
+        ffi::sp_compute_paths_bary_states(
             ctx.0,
             face_indices.as_ptr(),
             bary_flat.as_ptr(),
@@ -375,21 +371,24 @@ pub fn shortest_paths_barycentric(
         )
     };
     if rc != 0 {
-        return Err(format!("sp_compute_paths_bary failed with code {}", rc));
+        return Err(format!(
+            "sp_compute_paths_bary_states failed with code {}",
+            rc
+        ));
     }
 
-    // Read back Euclidean polylines first
-    let mut euclid_paths: Vec<Vec<[f64; 3]>> = Vec::with_capacity(goals.len());
+    // Read back barycentric paths directly
+    let mut bary_paths: Vec<Vec<FaceBary>> = Vec::with_capacity(goals.len());
 
     // Guard to free C allocations even if a panic occurs while materializing results.
     struct PathsGuard {
-        paths: *mut *mut ffi::sp_point3,
+        paths: *mut *mut ffi::sp_face_bary,
         sizes: *mut usize,
         count: usize,
     }
     impl Drop for PathsGuard {
         fn drop(&mut self) {
-            unsafe { ffi::sp_free_paths(self.paths, self.sizes, self.count) }
+            unsafe { ffi::sp_free_bary_paths(self.paths, self.sizes, self.count) }
         }
     }
     let guard = PathsGuard {
@@ -403,128 +402,16 @@ pub fn shortest_paths_barycentric(
         let paths_slice = std::slice::from_raw_parts(guard.paths, guard.count);
         for i in 0..guard.count {
             let n = sizes_slice[i];
-            let pts = std::slice::from_raw_parts(paths_slice[i], n);
+            let items = std::slice::from_raw_parts(paths_slice[i], n);
             let mut poly = Vec::with_capacity(n);
-            for p in pts {
-                poly.push([p.x, p.y, p.z]);
+            for it in items {
+                poly.push(FaceBary {
+                    face: it.face as usize,
+                    bary: [it.b0, it.b1, it.b2],
+                });
             }
-            euclid_paths.push(poly);
+            bary_paths.push(poly);
         }
-    }
-    drop(guard);
-
-    // Helper to compute barycentric coordinates of point p on triangle (a,b,c).
-    fn barycentric_for_point(
-        a: [f64; 3],
-        b: [f64; 3],
-        c: [f64; 3],
-        p: [f64; 3],
-    ) -> Option<[f64; 3]> {
-        let v0 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        let v1 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-        let v2 = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
-        let dot = |u: [f64; 3], v: [f64; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
-        let d00 = dot(v0, v0);
-        let d01 = dot(v0, v1);
-        let d11 = dot(v1, v1);
-        let d20 = dot(v2, v0);
-        let d21 = dot(v2, v1);
-        let denom = d00 * d11 - d01 * d01;
-        if denom.abs() < 1e-20 {
-            return None;
-        }
-        let v = (d11 * d20 - d01 * d21) / denom;
-        let w = (d00 * d21 - d01 * d20) / denom;
-        let u = 1.0 - v - w;
-        let rp = [
-            u * a[0] + v * b[0] + w * c[0],
-            u * a[1] + v * b[1] + w * c[1],
-            u * a[2] + v * b[2] + w * c[2],
-        ];
-        let plane_err =
-            ((rp[0] - p[0]).abs() + (rp[1] - p[1]).abs() + (rp[2] - p[2]).abs()).max(0.0);
-        let eps = 1e-8;
-        if plane_err <= 1e-6
-            && u >= -eps
-            && v >= -eps
-            && w >= -eps
-            && u <= 1.0 + eps
-            && v <= 1.0 + eps
-            && w <= 1.0 + eps
-        {
-            Some([u, v, w])
-        } else {
-            None
-        }
-    }
-
-    // Map each Euclidean point to a FaceBary by searching faces.
-    let mut bary_paths: Vec<Vec<FaceBary>> = Vec::with_capacity(euclid_paths.len());
-    for poly in euclid_paths.into_iter() {
-        let mut out_poly: Vec<FaceBary> = Vec::with_capacity(poly.len());
-        'points: for p in poly.into_iter() {
-            for (fi, f) in faces.iter().enumerate() {
-                let a = vertices[f[0] as usize];
-                let b = vertices[f[1] as usize];
-                let c = vertices[f[2] as usize];
-                if let Some(bary) = barycentric_for_point(a, b, c, p) {
-                    out_poly.push(FaceBary { face: fi, bary });
-                    continue 'points;
-                }
-            }
-            // Fallback: try exact vertex match
-            let mut pushed = false;
-            let eps = 1e-9;
-            for (fi, f) in faces.iter().enumerate() {
-                let a = vertices[f[0] as usize];
-                let b = vertices[f[1] as usize];
-                let c = vertices[f[2] as usize];
-                let eq = |x: [f64; 3], y: [f64; 3]| {
-                    (x[0] - y[0]).abs() <= eps
-                        && (x[1] - y[1]).abs() <= eps
-                        && (x[2] - y[2]).abs() <= eps
-                };
-                if eq(p, a) {
-                    out_poly.push(FaceBary {
-                        face: fi,
-                        bary: [1.0, 0.0, 0.0],
-                    });
-                    pushed = true;
-                    break;
-                }
-                if eq(p, b) {
-                    out_poly.push(FaceBary {
-                        face: fi,
-                        bary: [0.0, 1.0, 0.0],
-                    });
-                    pushed = true;
-                    break;
-                }
-                if eq(p, c) {
-                    out_poly.push(FaceBary {
-                        face: fi,
-                        bary: [0.0, 0.0, 1.0],
-                    });
-                    pushed = true;
-                    break;
-                }
-            }
-            if !pushed {
-                if let Some(first_face) = faces.get(0) {
-                    let a = vertices[first_face[0] as usize];
-                    let b = vertices[first_face[1] as usize];
-                    let c = vertices[first_face[2] as usize];
-                    let bary = barycentric_for_point(a, b, c, p).unwrap_or([1.0, 0.0, 0.0]);
-                    out_poly.push(FaceBary { face: 0, bary });
-                } else {
-                    out_poly.push(FaceBary {
-                        face: 0,
-                        bary: [1.0, 0.0, 0.0],
-                    });
-                }
-            }
-        }
-        bary_paths.push(out_poly);
     }
 
     Ok(bary_paths)

@@ -11,6 +11,12 @@ typedef struct {
     double x, y, z;
 } sp_point3;
 
+// Barycentric location on a face
+typedef struct {
+    size_t face;
+    double b0, b1, b2;
+} sp_face_bary;
+
 // Opaque context holding the mesh and CGAL shortest path state
 typedef struct sp_context sp_context;
 
@@ -32,13 +38,14 @@ int sp_compute_paths(sp_context* ctx,
                      sp_point3*** out_paths,
                      size_t** out_sizes);
 
-// New: Set source point by barycentric coordinates within a face. face_index in [0, face_count).
+// Set source point by barycentric coordinates within a face. face_index in [0, face_count).
 // Returns 0 on success, non-zero on error (2 for exceptions, 3 for invalid input).
 int sp_set_source_bary(sp_context* ctx, size_t face_index, double b0, double b1, double b2);
 
-// New: Compute shortest paths to goal points specified by barycentric coords on faces.
+// Compute shortest paths to goal points specified by barycentric coords on faces.
 // face_indices: array of length goal_count; bary_coords: interleaved triples (b0,b1,b2) length goal_count*3.
-// Returns 0 on success; outputs same as sp_compute_paths.
+// Returns 0 on success; outputs Euclidean polylines.
+// TODO, Junie, remove this entirely!
 int sp_compute_paths_bary(sp_context* ctx,
                           const size_t* face_indices,
                           const double* bary_coords,
@@ -46,8 +53,20 @@ int sp_compute_paths_bary(sp_context* ctx,
                           sp_point3*** out_paths,
                           size_t** out_sizes);
 
-// Free the arrays allocated by sp_compute_paths
+// Compute shortest paths specified by barycentric goals and return barycentric path states.
+// On success fills out_paths with an array (per goal) of sp_face_bary of length out_sizes[i].
+int sp_compute_paths_bary_states(sp_context* ctx,
+                                 const size_t* face_indices,
+                                 const double* bary_coords,
+                                 size_t goal_count,
+                                 sp_face_bary*** out_paths,
+                                 size_t** out_sizes);
+
+// Free the arrays allocated by sp_compute_paths (Euclidean)
 void sp_free_paths(sp_point3** paths, size_t* sizes, size_t goal_count);
+
+// Free the arrays allocated by sp_compute_paths_bary_states (barycentric)
+void sp_free_bary_paths(sp_face_bary** paths, size_t* sizes, size_t goal_count);
 
 #ifdef __cplusplus
 } // extern "C"

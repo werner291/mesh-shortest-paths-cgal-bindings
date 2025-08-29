@@ -20,6 +20,24 @@ using vertex_descriptor = boost::graph_traits<Surface_mesh>::vertex_descriptor;
 using face_descriptor = boost::graph_traits<Surface_mesh>::face_descriptor;
 using halfedge_descriptor = boost::graph_traits<Surface_mesh>::halfedge_descriptor;
 
+// Visitor to collect path as Face_location states
+template <typename SSSP>
+struct PathVisitor {
+    const Surface_mesh &mesh;
+    SSSP &path_algo;
+    std::vector<typename SSSP::Face_location> &states;
+    void operator()(typename SSSP::halfedge_descriptor edge, typename SSSP::FT t) {
+        states.push_back(path_algo.face_location(edge, t));
+        states.push_back(path_algo.face_location(mesh.opposite(edge), 1.0 - t));
+    }
+    void operator()(typename SSSP::vertex_descriptor vertex) {
+        states.push_back(path_algo.face_location(vertex));
+    }
+    void operator()(typename SSSP::face_descriptor f, typename SSSP::Barycentric_coordinates location) {
+        states.push_back({f, location});
+    }
+};
+
 struct sp_context {
     Surface_mesh mesh;
     Shortest_paths sssp;
@@ -31,6 +49,11 @@ struct sp_context {
     vertex_descriptor source_v{};
     Point_3 source_p = Point_3(0,0,0);
     bool has_source = false;
+
+    // Barycentric source cache
+    size_t source_face_index = static_cast<size_t>(-1);
+    Traits::Barycentric_coordinates source_bc = {{1.0,0.0,0.0}};
+    bool has_source_bary = false;
 
     sp_context(Surface_mesh&& m)
         : mesh(std::move(m)), sssp(mesh) {}
@@ -216,6 +239,9 @@ int sp_set_source_bary(sp_context* ctx, size_t face_index, double b0, double b1,
         ctx->sssp.add_source_point(f, bc);
         ctx->source_p = p;
         ctx->has_source = true;
+        ctx->source_face_index = face_index;
+        ctx->source_bc = bc;
+        ctx->has_source_bary = true;
         return 0;
     } catch (...) { return 2; }
 }
@@ -271,6 +297,78 @@ int sp_compute_paths_bary(sp_context* ctx,
         *out_sizes = sizes;
         return 0;
     } catch (...) { return 2; }
+}
+
+// Helper: find input face index for a face_descriptor
+static size_t face_index_of(const sp_context* ctx, face_descriptor f) {
+    for (size_t i = 0; i < ctx->faces.size(); ++i) {
+        if (ctx->faces[i] == f) return i;
+    }
+    return static_cast<size_t>(-1);
+}
+
+int sp_compute_paths_bary_states(sp_context* ctx,
+                                 const size_t* face_indices,
+                                 const double* bary_coords,
+                                 size_t goal_count,
+                                 sp_face_bary*** out_paths,
+                                 size_t** out_sizes) {
+    if (!ctx || !face_indices || !bary_coords || !out_paths || !out_sizes) return 1;
+    try {
+        sp_face_bary** paths = static_cast<sp_face_bary**>(::operator new[](goal_count * sizeof(sp_face_bary*)));
+        size_t* sizes = static_cast<size_t*>(::operator new[](goal_count * sizeof(size_t)));
+        for (size_t i = 0; i < goal_count; ++i) {
+            size_t fi = face_indices[i];
+            double b0 = bary_coords[3*i+0];
+            double b1 = bary_coords[3*i+1];
+            double b2 = bary_coords[3*i+2];
+            if (fi >= ctx->faces.size() || !is_valid_bary(b0,b1,b2)) {
+                sizes[i] = 0;
+                paths[i] = nullptr;
+                continue;
+            }
+            face_descriptor f = ctx->faces[fi];
+            Traits::Barycentric_coordinates bc = {{b0, b1, b2}};
+
+            std::vector<Shortest_paths::Face_location> states;
+            states.reserve(16);
+            PathVisitor<Shortest_paths> vis{ctx->mesh, ctx->sssp, states};
+            ctx->sssp.shortest_path_sequence_to_source_points(f, bc, vis);
+            std::reverse(states.begin(), states.end());
+
+            // Ensure endpoints (source first, goal last)
+            if (ctx->has_source_bary) {
+                states.insert(states.begin(), { ctx->faces[ctx->source_face_index], ctx->source_bc });
+            }
+            states.push_back({ f, bc });
+
+            sizes[i] = states.size();
+            sp_face_bary* arr = nullptr;
+            if (sizes[i] > 0) {
+                arr = static_cast<sp_face_bary*>(::operator new[](sizes[i] * sizeof(sp_face_bary)));
+                for (size_t j = 0; j < sizes[i]; ++j) {
+                    size_t fi_out = face_index_of(ctx, states[j].first);
+                    arr[j].face = fi_out;
+                    arr[j].b0 = states[j].second[0];
+                    arr[j].b1 = states[j].second[1];
+                    arr[j].b2 = states[j].second[2];
+                }
+            }
+            paths[i] = arr;
+        }
+        *out_paths = paths;
+        *out_sizes = sizes;
+        return 0;
+    } catch (...) { return 2; }
+}
+
+void sp_free_bary_paths(sp_face_bary** paths, size_t* sizes, size_t goal_count) {
+    if (!paths || !sizes) return;
+    for (size_t i = 0; i < goal_count; ++i) {
+        ::operator delete[](paths[i]);
+    }
+    ::operator delete[](paths);
+    ::operator delete[](sizes);
 }
 
 } // extern C
