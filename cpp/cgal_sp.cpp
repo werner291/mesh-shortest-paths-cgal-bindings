@@ -20,21 +20,43 @@ using vertex_descriptor = boost::graph_traits<Surface_mesh>::vertex_descriptor;
 using face_descriptor = boost::graph_traits<Surface_mesh>::face_descriptor;
 using halfedge_descriptor = boost::graph_traits<Surface_mesh>::halfedge_descriptor;
 
-// Visitor to collect path as Face_location states
+// Visitor to collect path as event stream (edge traversal, barycentric point, vertex)
 template <typename SSSP>
 struct PathVisitor {
     const Surface_mesh &mesh;
     SSSP &path_algo;
-    std::vector<typename SSSP::Face_location> &states;
+    std::vector<sp_event> &events;
     void operator()(typename SSSP::halfedge_descriptor edge, typename SSSP::FT t) {
-        states.push_back(path_algo.face_location(edge, t));
-        states.push_back(path_algo.face_location(mesh.opposite(edge), 1.0 - t));
+        // Single event representing traversal across an edge: left face point -> right/opposite face point
+        auto loc_a = path_algo.face_location(edge, t);
+        auto loc_b = path_algo.face_location(mesh.opposite(edge), 1.0 - t);
+        sp_event ev{};
+        ev.kind = static_cast<int>(SP_EVENT_EDGE);
+        ev.fa = static_cast<size_t>(loc_a.first);
+        ev.a0 = loc_a.second[1];
+        ev.a1 = loc_a.second[2];
+        ev.a2 = loc_a.second[0];
+        ev.fb = static_cast<size_t>(loc_b.first);
+        ev.b0 = loc_b.second[1];
+        ev.b1 = loc_b.second[2];
+        ev.b2 = loc_b.second[0];
+        ev.vertex = 0;
+        events.push_back(ev);
     }
     void operator()(typename SSSP::vertex_descriptor vertex) {
-        throw std::runtime_error("Unimplemented vertex path extraction"); 
+        sp_event ev{};
+        ev.kind = static_cast<int>(SP_EVENT_VERTEX);
+        ev.vertex = static_cast<size_t>(vertex);
+        events.push_back(ev);
     }
     void operator()(typename SSSP::face_descriptor f, typename SSSP::Barycentric_coordinates location) {
-        states.push_back({f, location});
+        sp_event ev{};
+        ev.kind = static_cast<int>(SP_EVENT_BARY);
+        ev.fa = static_cast<size_t>(f);
+        ev.a0 = location[1];
+        ev.a1 = location[2];
+        ev.a2 = location[0];
+        events.push_back(ev);
     }
 };
 
@@ -130,10 +152,35 @@ int sp_compute_paths_bary_states(sp_context* ctx,
         face_descriptor f {fi};
         Traits::Barycentric_coordinates bc = {{b2, b0, b1}};
 
-        std::vector<Shortest_paths::Face_location> states;
-        PathVisitor<Shortest_paths> vis{ctx->mesh, ctx->sssp, states};
+        std::vector<sp_event> events;
+        PathVisitor<Shortest_paths> vis{ctx->mesh, ctx->sssp, events};
         ctx->sssp.shortest_path_sequence_to_source_points(f, bc, vis);
-        std::reverse(states.begin(), states.end());
+        std::reverse(events.begin(), events.end());
+        for (auto &ev : events) {
+            if (ev.kind == SP_EVENT_EDGE) {
+                std::swap(ev.fa, ev.fb);
+                std::swap(ev.a0, ev.b0);
+                std::swap(ev.a1, ev.b1);
+                std::swap(ev.a2, ev.b2);
+            }
+        }
+
+        // Convert events to barycentric locations for backward compatibility of this function
+        std::vector<Shortest_paths::Face_location> states;
+        states.reserve(events.size() * 2 + 2);
+        for (const auto &ev : events) {
+            if (ev.kind == SP_EVENT_BARY) {
+                Traits::Barycentric_coordinates bc2 = {{ev.a2, ev.a0, ev.a1}};
+                states.push_back({face_descriptor{ev.fa}, bc2});
+            } else if (ev.kind == SP_EVENT_EDGE) {
+                Traits::Barycentric_coordinates bca = {{ev.a2, ev.a0, ev.a1}};
+                Traits::Barycentric_coordinates bcb = {{ev.b2, ev.b0, ev.b1}};
+                states.push_back({face_descriptor{ev.fa}, bca});
+                states.push_back({face_descriptor{ev.fb}, bcb});
+            } else if (ev.kind == SP_EVENT_VERTEX) {
+                // ignore for bary sequence
+            }
+        }
 
         sizes[i] = states.size();
         sp_face_bary* arr = nullptr;
@@ -154,6 +201,62 @@ int sp_compute_paths_bary_states(sp_context* ctx,
 }
 
 void sp_free_bary_paths(sp_face_bary** paths, size_t* sizes, size_t goal_count) {
+    if (!paths || !sizes) return;
+    for (size_t i = 0; i < goal_count; ++i) {
+        ::operator delete[](paths[i]);
+    }
+    ::operator delete[](paths);
+    ::operator delete[](sizes);
+}
+
+int sp_compute_paths_events(sp_context* ctx,
+                            const size_t* face_indices,
+                            const double* bary_coords,
+                            size_t goal_count,
+                            sp_event*** out_paths,
+                            size_t** out_sizes) {
+    if (!ctx) return 1;
+    sp_event** paths = static_cast<sp_event**>(::operator new[](goal_count * sizeof(sp_event*)));
+    size_t* sizes = static_cast<size_t*>(::operator new[](goal_count * sizeof(size_t)));
+    for (size_t i = 0; i < goal_count; ++i) {
+        size_t fi = face_indices[i];
+        double b0 = bary_coords[3*i+0];
+        double b1 = bary_coords[3*i+1];
+        double b2 = bary_coords[3*i+2];
+        face_descriptor f {fi};
+        Traits::Barycentric_coordinates bc = {{b2, b0, b1}};
+
+        std::vector<sp_event> events;
+        PathVisitor<Shortest_paths> vis{ctx->mesh, ctx->sssp, events};
+        ctx->sssp.shortest_path_sequence_to_source_points(f, bc, vis);
+        std::reverse(events.begin(), events.end());
+        // After reversing to source->goal order, edge events still encode goal->source transitions.
+        // Swap their from/to endpoints to encode source->goal transitions.
+        for (auto &ev : events) {
+            if (ev.kind == SP_EVENT_EDGE) {
+                std::swap(ev.fa, ev.fb);
+                std::swap(ev.a0, ev.b0);
+                std::swap(ev.a1, ev.b1);
+                std::swap(ev.a2, ev.b2);
+            }
+        }
+
+        sizes[i] = events.size();
+        sp_event* arr = nullptr;
+        if (sizes[i] > 0) {
+            arr = static_cast<sp_event*>(::operator new[](sizes[i] * sizeof(sp_event)));
+            for (size_t j = 0; j < sizes[i]; ++j) {
+                arr[j] = events[j];
+            }
+        }
+        paths[i] = arr;
+    }
+    *out_paths = paths;
+    *out_sizes = sizes;
+    return 0;
+}
+
+void sp_free_event_paths(sp_event** paths, size_t* sizes, size_t goal_count) {
     if (!paths || !sizes) return;
     for (size_t i = 0; i < goal_count; ++i) {
         ::operator delete[](paths[i]);

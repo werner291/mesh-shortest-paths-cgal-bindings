@@ -32,6 +32,120 @@ pub struct FaceTraversal {
     pub exit: [f64; 3],
 }
 
+// Events coming from C++ visitor
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TraversalEvent {
+    Edge {
+        from_face: usize,
+        from_bary: [f64; 3],
+        to_face: usize,
+        to_bary: [f64; 3],
+    },
+    BaryPoint {
+        face: usize,
+        bary: [f64; 3],
+    },
+    Vertex {
+        vertex: usize,
+    },
+}
+
+pub fn group_events_to_traversals(
+    event_paths: Vec<Vec<TraversalEvent>>,
+) -> Vec<Vec<FaceTraversal>> {
+    event_paths
+        .into_iter()
+        .map(single_event_path_to_traversals)
+        .collect()
+}
+
+fn single_event_path_to_traversals(events: Vec<TraversalEvent>) -> Vec<FaceTraversal> {
+    let mut travs: Vec<FaceTraversal> = Vec::new();
+    let mut current_face: Option<usize> = None;
+    let mut entry: [f64; 3] = [0.0; 3];
+    let mut last: [f64; 3] = [0.0; 3];
+
+    for ev in events.into_iter() {
+        match ev {
+            TraversalEvent::BaryPoint { face, bary } => match current_face {
+                None => {
+                    current_face = Some(face);
+                    entry = bary;
+                    last = bary;
+                }
+                Some(cf) if cf == face => {
+                    last = bary;
+                }
+                Some(cf) => {
+                    travs.push(FaceTraversal {
+                        face: cf,
+                        entry,
+                        exit: last,
+                    });
+                    current_face = Some(face);
+                    entry = bary;
+                    last = bary;
+                }
+            },
+            TraversalEvent::Edge {
+                from_face,
+                from_bary,
+                to_face,
+                to_bary,
+            } => {
+                // Ensure current_face context is set to from_face and last is at from_bary
+                match current_face {
+                    None => {
+                        current_face = Some(from_face);
+                        entry = from_bary;
+                        last = from_bary;
+                    }
+                    Some(cf) if cf == from_face => {
+                        last = from_bary;
+                    }
+                    Some(cf) => {
+                        // Close the previous face segment before switching to from_face (should rarely happen)
+                        travs.push(FaceTraversal {
+                            face: cf,
+                            entry,
+                            exit: last,
+                        });
+                        current_face = Some(from_face);
+                        entry = from_bary;
+                        last = from_bary;
+                    }
+                }
+                // Finish the segment on from_face up to the edge point
+                if let Some(cf) = current_face {
+                    travs.push(FaceTraversal {
+                        face: cf,
+                        entry,
+                        exit: last,
+                    });
+                }
+                // Enter next face at to_bary and continue
+                current_face = Some(to_face);
+                entry = to_bary;
+                last = to_bary;
+            }
+            TraversalEvent::Vertex { .. } => {
+                // Vertex events are explicitly represented but not needed for FaceTraversal grouping
+                // We ignore them for traversal grouping purposes.
+            }
+        }
+    }
+
+    if let Some(cf) = current_face {
+        travs.push(FaceTraversal {
+            face: cf,
+            entry,
+            exit: last,
+        });
+    }
+
+    travs
+}
+
 fn group_bary_to_traversals(bary_paths: Vec<Vec<FaceBary>>) -> Vec<Vec<FaceTraversal>> {
     let mut trav_paths: Vec<Vec<FaceTraversal>> = Vec::with_capacity(bary_paths.len());
     for poly in bary_paths.into_iter() {
@@ -108,6 +222,58 @@ unsafe fn read_bary_paths(
         bary_paths.push(poly);
     }
     bary_paths
+}
+
+unsafe fn read_event_paths(
+    out_paths: *mut *mut ffi::sp_event,
+    out_sizes: *mut usize,
+    count: usize,
+) -> Vec<Vec<TraversalEvent>> {
+    struct PathsGuard {
+        paths: *mut *mut ffi::sp_event,
+        sizes: *mut usize,
+        count: usize,
+    }
+    impl Drop for PathsGuard {
+        fn drop(&mut self) {
+            unsafe { ffi::sp_free_event_paths(self.paths, self.sizes, self.count) }
+        }
+    }
+    let guard = PathsGuard {
+        paths: out_paths,
+        sizes: out_sizes,
+        count,
+    };
+    let sizes_slice = std::slice::from_raw_parts(guard.sizes, guard.count);
+    let paths_slice = std::slice::from_raw_parts(guard.paths, guard.count);
+    let mut out: Vec<Vec<TraversalEvent>> = Vec::with_capacity(count);
+    for i in 0..guard.count {
+        let n = sizes_slice[i];
+        let items = std::slice::from_raw_parts(paths_slice[i], n);
+        let mut v = Vec::with_capacity(n);
+        for it in items {
+            let kind = it.kind as i32;
+            if kind == ffi::sp_event_kind_SP_EVENT_EDGE as i32 {
+                v.push(TraversalEvent::Edge {
+                    from_face: it.fa as usize,
+                    from_bary: [it.a0, it.a1, it.a2],
+                    to_face: it.fb as usize,
+                    to_bary: [it.b0, it.b1, it.b2],
+                });
+            } else if kind == ffi::sp_event_kind_SP_EVENT_BARY as i32 {
+                v.push(TraversalEvent::BaryPoint {
+                    face: it.fa as usize,
+                    bary: [it.a0, it.a1, it.a2],
+                });
+            } else if kind == ffi::sp_event_kind_SP_EVENT_VERTEX as i32 {
+                v.push(TraversalEvent::Vertex {
+                    vertex: it.vertex as usize,
+                });
+            }
+        }
+        out.push(v);
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -215,11 +381,11 @@ pub fn shortest_paths(
         bary_flat.extend_from_slice(&g_bary);
     }
 
-    // Invoke barycentric path computation to get barycentric path states directly
-    let mut out_paths: *mut *mut ffi::sp_face_bary = std::ptr::null_mut();
+    // Invoke event-based path computation and convert events to traversals
+    let mut out_paths: *mut *mut ffi::sp_event = std::ptr::null_mut();
     let mut out_sizes: *mut usize = std::ptr::null_mut();
     let rc = unsafe {
-        ffi::sp_compute_paths_bary_states(
+        ffi::sp_compute_paths_events(
             ctx.0,
             face_indices.as_ptr(),
             bary_flat.as_ptr(),
@@ -235,10 +401,20 @@ pub fn shortest_paths(
         ));
     }
 
-    // Read back barycentric paths directly, then convert into FaceTraversal per face
-    let bary_paths: Vec<Vec<FaceBary>> =
-        unsafe { read_bary_paths(out_paths, out_sizes, goals.0.len()) };
-    let trav_paths: Vec<Vec<FaceTraversal>> = group_bary_to_traversals(bary_paths);
+    // Read back visitation events and derive FaceTraversal sequences
+    let mut event_paths: Vec<Vec<TraversalEvent>> =
+        unsafe { read_event_paths(out_paths, out_sizes, goals.0.len()) };
+    // Prepend explicit source barycentric point to each path to ensure clear start
+    for evs in event_paths.iter_mut() {
+        evs.insert(
+            0,
+            TraversalEvent::BaryPoint {
+                face: src_face,
+                bary: src_bary,
+            },
+        );
+    }
+    let trav_paths: Vec<Vec<FaceTraversal>> = group_events_to_traversals(event_paths);
     Ok(trav_paths)
 }
 
@@ -313,11 +489,11 @@ pub fn shortest_paths_barycentric(
         bary_flat.extend_from_slice(&[g.bary[0], g.bary[1], g.bary[2]]);
     }
 
-    let mut out_paths: *mut *mut ffi::sp_face_bary = std::ptr::null_mut();
+    let mut out_paths: *mut *mut ffi::sp_event = std::ptr::null_mut();
     let mut out_sizes: *mut usize = std::ptr::null_mut();
     // SAFETY: We pass valid pointers to contiguous arrays of faces and barycentric coordinates.
     let rc = unsafe {
-        ffi::sp_compute_paths_bary_states(
+        ffi::sp_compute_paths_events(
             ctx.0,
             face_indices.as_ptr(),
             bary_flat.as_ptr(),
@@ -333,11 +509,11 @@ pub fn shortest_paths_barycentric(
         ));
     }
 
-    // Read back barycentric paths directly, then group into FaceTraversal
-    let bary_paths: Vec<Vec<FaceBary>> =
-        unsafe { read_bary_paths(out_paths, out_sizes, goals.len()) };
+    // Read back visitation events, then derive FaceTraversal
+    let event_paths: Vec<Vec<TraversalEvent>> =
+        unsafe { read_event_paths(out_paths, out_sizes, goals.len()) };
 
-    let trav_paths: Vec<Vec<FaceTraversal>> = group_bary_to_traversals(bary_paths);
+    let trav_paths: Vec<Vec<FaceTraversal>> = group_events_to_traversals(event_paths);
 
     Ok(trav_paths)
 }

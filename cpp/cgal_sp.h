@@ -12,6 +12,26 @@ typedef struct {
     double b0, b1, b2;
 } sp_face_bary;
 
+// Event kinds emitted by the path visitor
+typedef enum {
+    SP_EVENT_EDGE = 0,   // edge traversal: from (fa, a0,a1,a2) to (fb, b0,b1,b2)
+    SP_EVENT_BARY = 1,   // barycentric point on a face: uses (fa, a*) only
+    SP_EVENT_VERTEX = 2  // vertex visitation: uses vertex index only
+} sp_event_kind;
+
+// Path visitation event; fields are interpreted depending on kind
+typedef struct {
+    int kind;           // sp_event_kind
+    // For SP_EVENT_EDGE: (fa,a0,a1,a2) -> (fb,b0,b1,b2)
+    // For SP_EVENT_BARY: (fa,a0,a1,a2) valid; fb/b* ignored
+    // For SP_EVENT_VERTEX: vertex valid; other fields ignored
+    size_t fa;
+    double a0, a1, a2;
+    size_t fb;
+    double b0, b1, b2;
+    size_t vertex;
+} sp_event;
+
 // Opaque context holding the mesh and CGAL shortest path state
 typedef struct sp_context sp_context;
 
@@ -37,6 +57,17 @@ int sp_compute_paths_bary_states(sp_context* ctx,
 
 // Free the arrays allocated by sp_compute_paths_bary_states (barycentric)
 void sp_free_bary_paths(sp_face_bary** paths, size_t* sizes, size_t goal_count);
+
+// Compute shortest paths and return visitation events (edge, barycentric point, vertex)
+int sp_compute_paths_events(sp_context* ctx,
+                            const size_t* face_indices,
+                            const double* bary_coords,
+                            size_t goal_count,
+                            sp_event*** out_paths,
+                            size_t** out_sizes);
+
+// Free arrays allocated by sp_compute_paths_events
+void sp_free_event_paths(sp_event** paths, size_t* sizes, size_t goal_count);
 
 #ifdef __cplusplus
 } // extern "C"
