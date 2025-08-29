@@ -11,6 +11,8 @@ path = "src/lib.rs"
 
 [dependencies]
 
+[dev-dependencies]
+itertools = "0.14.0"
 
 [build-dependencies]
 bindgen = "0.70"
