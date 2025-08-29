@@ -32,39 +32,43 @@ pub struct FaceTraversal {
     pub exit: [f64; 3],
 }
 
-// Internal helpers to reduce duplication
 fn group_bary_to_traversals(bary_paths: Vec<Vec<FaceBary>>) -> Vec<Vec<FaceTraversal>> {
     let mut trav_paths: Vec<Vec<FaceTraversal>> = Vec::with_capacity(bary_paths.len());
     for poly in bary_paths.into_iter() {
-        let mut travs: Vec<FaceTraversal> = Vec::new();
-        if !poly.is_empty() {
-            let mut current_face = poly[0].face;
-            let mut entry = poly[0].bary;
-            let mut last = poly[0].bary;
-            for fb in poly.into_iter().skip(1) {
-                if fb.face == current_face {
-                    last = fb.bary;
-                } else {
-                    travs.push(FaceTraversal {
-                        face: current_face,
-                        entry,
-                        exit: last,
-                    });
-                    current_face = fb.face;
-                    entry = fb.bary;
-                    last = fb.bary;
-                }
-            }
-            // push last run
+        trav_paths.push(single_bary_path_to_traversals(poly));
+    }
+    trav_paths
+}
+
+fn single_bary_path_to_traversals(poly: Vec<FaceBary>) -> Vec<FaceTraversal> {
+    assert!(poly.len() >= 2);
+
+    let mut travs: Vec<FaceTraversal> = Vec::new();
+    let mut current_face = poly[0].face;
+    let mut entry = poly[0].bary;
+    let mut last = poly[0].bary;
+    for fb in poly.into_iter().skip(1) {
+        if fb.face == current_face {
+            last = fb.bary;
+        } else {
             travs.push(FaceTraversal {
                 face: current_face,
                 entry,
                 exit: last,
             });
+            current_face = fb.face;
+            entry = fb.bary;
+            last = fb.bary;
         }
-        trav_paths.push(travs);
     }
-    trav_paths
+    // push last run
+    travs.push(FaceTraversal {
+        face: current_face,
+        entry,
+        exit: last,
+    });
+
+    travs
 }
 
 unsafe fn read_bary_paths(

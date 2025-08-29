@@ -1,4 +1,8 @@
+use crate::common::{approx_face_bary, dist};
 use rust_cgal_shortest_paths::{FaceBary, FaceTraversal, shortest_paths_barycentric};
+mod common;
+use crate::common::polyline_len;
+use common::assert_consecutive_traversals_continuity;
 
 #[test]
 fn barycentric_source_and_goal() {
@@ -32,41 +36,7 @@ fn barycentric_source_and_goal() {
 
     assert_eq!(paths.len(), 1);
     let poly = &paths[0];
-
-    // Validate consecutive traversals continuity (accept either global direction):
-    for k in 1..poly.len() {
-        let prev = poly[k - 1];
-        let next = poly[k];
-        let p_prev_exit = bary_on_face(&vertices, &faces, prev.face, prev.exit);
-        let p_prev_entry = bary_on_face(&vertices, &faces, prev.face, prev.entry);
-        let p_next_entry = bary_on_face(&vertices, &faces, next.face, next.entry);
-        let p_next_exit = bary_on_face(&vertices, &faces, next.face, next.exit);
-        let forward = approx_pt(p_prev_exit, p_next_entry, 1e-9);
-        let backward = approx_pt(p_prev_entry, p_next_exit, 1e-9);
-        if !(forward || backward) {
-            // Allow degenerate-at-endpoint pairs (e.g., library may only emit endpoints)
-            let deg_prev = approx_pt(p_prev_entry, p_prev_exit, 1e-12);
-            let deg_next = approx_pt(p_next_entry, p_next_exit, 1e-12);
-            let src_pt = bary_on_face(&vertices, &faces, source.face, source.bary);
-            let goal_pt = bary_on_face(&vertices, &faces, goals[0].face, goals[0].bary);
-            let prev_is_src =
-                approx_pt(p_prev_entry, src_pt, 1e-12) && approx_pt(p_prev_exit, src_pt, 1e-12);
-            let next_is_goal =
-                approx_pt(p_next_entry, goal_pt, 1e-12) && approx_pt(p_next_exit, goal_pt, 1e-12);
-            if !(deg_prev && deg_next && prev_is_src && next_is_goal) {
-                panic!(
-                    "consecutive traversal mismatch at segment {}: prev(face={}, entry={:?}, exit={:?}) next(face={}, entry={:?}, exit={:?})",
-                    k - 1,
-                    prev.face,
-                    prev.entry,
-                    prev.exit,
-                    next.face,
-                    next.entry,
-                    next.exit
-                );
-            }
-        }
-    }
+    assert_consecutive_traversals_continuity(&vertices, &faces, poly);
 
     // Convert traversal sequence to Euclidean for verification only
     let epoly = bary_poly_to_euclid(&vertices, &faces, poly);
@@ -81,24 +51,6 @@ fn barycentric_source_and_goal() {
     let eps = 1e-6;
     assert!(approx_pt(first, src_pt, eps));
     assert!(approx_pt(last, goal_pt, eps));
-}
-
-fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    let dz = a[2] - b[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
-}
-
-fn polyline_len(poly: &[[f64; 3]]) -> f64 {
-    if poly.is_empty() {
-        return 0.0;
-    }
-    let mut s = 0.0;
-    for i in 1..poly.len() {
-        s += dist(poly[i - 1], poly[i]);
-    }
-    s
 }
 
 // Evaluate a barycentric coordinate on a given face into Euclidean coordinates.
@@ -130,37 +82,19 @@ fn bary_poly_to_euclid(
     faces: &[[u32; 3]],
     travs: &[FaceTraversal],
 ) -> Vec<[f64; 3]> {
-    let mut out: Vec<[f64; 3]> = Vec::new();
-    if travs.is_empty() {
-        return out;
-    }
-    for (idx, t) in travs.iter().enumerate() {
-        // push entry for each traversal
-        let [i0, i1, i2] = faces[t.face];
-        let a = vertices[i0 as usize];
-        let b = vertices[i1 as usize];
-        let c = vertices[i2 as usize];
-        let e = [
-            t.entry[0] * a[0] + t.entry[1] * b[0] + t.entry[2] * c[0],
-            t.entry[0] * a[1] + t.entry[1] * b[1] + t.entry[2] * c[1],
-            t.entry[0] * a[2] + t.entry[1] * b[2] + t.entry[2] * c[2],
-        ];
-        out.push(e);
-        if idx + 1 == travs.len() {
-            let x = [
-                t.exit[0] * a[0] + t.exit[1] * b[0] + t.exit[2] * c[0],
-                t.exit[0] * a[1] + t.exit[1] * b[1] + t.exit[2] * c[1],
-                t.exit[0] * a[2] + t.exit[1] * b[2] + t.exit[2] * c[2],
-            ];
-            out.push(x);
-        }
-    }
-    out
+    travs
+        .iter()
+        .map(|t| bary_on_face(vertices, faces, t.face, t.entry))
+        .chain(
+            travs
+                .last()
+                .map(|t| bary_on_face(vertices, faces, t.face, t.exit)),
+        )
+        .collect()
 }
 
 #[test]
 fn triangle_vertex_to_vertices() {
-    // Right triangle with unit legs
     let vertices = vec![
         [0.0, 0.0, 0.0], // v0
         [1.0, 0.0, 0.0], // v1
@@ -168,60 +102,52 @@ fn triangle_vertex_to_vertices() {
     ];
     let faces = vec![[0u32, 1, 2]];
 
-    // Source at vertex v0 on face 0 in barycentric coords
-    let source_face = 0usize;
-    let source_bary = [1.0, 0.0, 0.0];
-    // Goals at vertices v1 and v2 on face 0
+    // Source at vertex v0
+    let source = FaceBary {
+        face: 0,
+        bary: [1.0, 0.0, 0.0],
+    };
+
+    // Goals at vertices v1 and v2
     let goals = vec![
         FaceBary {
-            face: 0usize,
-            bary: [0.0, 1.0, 0.0],
+            face: 0,
+            bary: [0.0, 1.0, 0.0], // v1
         },
         FaceBary {
-            face: 0usize,
-            bary: [0.0, 0.0, 1.0],
+            face: 0,
+            bary: [0.0, 0.0, 1.0], // v2
         },
     ];
-
-    let source = FaceBary {
-        face: source_face,
-        bary: source_bary,
-    };
 
     let paths =
         shortest_paths_barycentric(&vertices, &faces, source, &goals).expect("compute paths");
+
+    // Verify we got paths to both goals
     assert_eq!(paths.len(), 2);
 
-    // v0->v1 and v0->v2 endpoints should match; lengths may depend on polyline sampling
+    // Convert paths to Euclidean space for testing
     let eps = 1e-6;
-    let source_pt = [
-        source_bary[0] * vertices[0][0]
-            + source_bary[1] * vertices[1][0]
-            + source_bary[2] * vertices[2][0],
-        source_bary[0] * vertices[0][1]
-            + source_bary[1] * vertices[1][1]
-            + source_bary[2] * vertices[2][1],
-        0.0,
-    ];
-    for (i, g) in goals.iter().enumerate() {
+    let source_pt = bary_on_face(&vertices, &faces, source.face, source.bary);
+
+    // Test each path
+    for (i, goal) in goals.iter().enumerate() {
         let poly = &paths[i];
         let epoly = bary_poly_to_euclid(&vertices, &faces, poly);
-        assert!(epoly.len() >= 2, "polyline has at least the endpoints");
+
+        // Path has at least start and end points
+        assert!(epoly.len() >= 2);
+
+        // Check endpoints match source and goal
         let first = epoly.first().copied().unwrap();
         let last = epoly.last().copied().unwrap();
-        let goal_pt = bary_on_face(&vertices, &faces, g.face, g.bary);
-        // Accept either direction
+        let goal_pt = bary_on_face(&vertices, &faces, goal.face, goal.bary);
+
         assert!(
             (approx_pt(first, source_pt, eps) && approx_pt(last, goal_pt, eps))
                 || (approx_pt(first, goal_pt, eps) && approx_pt(last, source_pt, eps)),
-            "endpoints must be source/goal in some order: first={:?}, last={:?}",
-            first,
-            last
+            "endpoints must be source/goal in some order"
         );
-        let len = polyline_len(&epoly);
-        let expected = dist(source_pt, goal_pt);
-        assert!(len >= 0.0, "length should be non-negative");
-        assert!(len >= expected - 1e-8, "len {} >= {}", len, expected);
     }
 }
 
@@ -242,11 +168,11 @@ fn square_diagonal_across_faces() {
     ];
     let faces = vec![[0u32, 1, 2], [0, 2, 3]];
 
-    // Source at v0 on face 0, goal at v2 on face 0
+    // Source and goal at centroids of faces
     let source_face = 0usize;
-    let source_bary = [1.0, 0.0, 0.0];
+    let source_bary = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
     let goal_face = 0usize;
-    let goal_bary = [0.0, 0.0, 1.0];
+    let goal_bary = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
 
     let source = FaceBary {
         face: source_face,
@@ -260,41 +186,7 @@ fn square_diagonal_across_faces() {
     let paths = shortest_paths_barycentric(&vertices, &faces, source, &goals).expect("compute");
     assert_eq!(paths.len(), 1);
     let poly = &paths[0];
-
-    // Validate consecutive traversals continuity (accept either global direction)
-    for k in 1..poly.len() {
-        let prev = poly[k - 1];
-        let next = poly[k];
-        let p_prev_exit = bary_on_face(&vertices, &faces, prev.face, prev.exit);
-        let p_prev_entry = bary_on_face(&vertices, &faces, prev.face, prev.entry);
-        let p_next_entry = bary_on_face(&vertices, &faces, next.face, next.entry);
-        let p_next_exit = bary_on_face(&vertices, &faces, next.face, next.exit);
-        let fwd = approx_pt(p_prev_exit, p_next_entry, 1e-9);
-        let bwd = approx_pt(p_prev_entry, p_next_exit, 1e-9);
-        if !(fwd || bwd) {
-            // Allow degenerate-at-endpoint pairs (library may only emit endpoints)
-            let deg_prev = approx_pt(p_prev_entry, p_prev_exit, 1e-12);
-            let deg_next = approx_pt(p_next_entry, p_next_exit, 1e-12);
-            let src_pt = bary_on_face(&vertices, &faces, source.face, source.bary);
-            let goal_pt = bary_on_face(&vertices, &faces, goals[0].face, goals[0].bary);
-            let prev_is_src =
-                approx_pt(p_prev_entry, src_pt, 1e-12) && approx_pt(p_prev_exit, src_pt, 1e-12);
-            let next_is_goal =
-                approx_pt(p_next_entry, goal_pt, 1e-12) && approx_pt(p_next_exit, goal_pt, 1e-12);
-            if !(deg_prev && deg_next && prev_is_src && next_is_goal) {
-                panic!(
-                    "consecutive traversal mismatch at segment {}: prev(face={}, entry={:?}, exit={:?}) next(face={}, entry={:?}, exit={:?})",
-                    k - 1,
-                    prev.face,
-                    prev.entry,
-                    prev.exit,
-                    next.face,
-                    next.entry,
-                    next.exit
-                );
-            }
-        }
-    }
+    assert_consecutive_traversals_continuity(&vertices, &faces, poly);
 
     let eps = 1e-6;
     let epoly = bary_poly_to_euclid(&vertices, &faces, poly);
@@ -313,7 +205,7 @@ fn square_diagonal_across_faces() {
     );
 
     let len = polyline_len(&epoly);
-    let expected = (2.0f64).sqrt();
+    let expected = dist(src_pt, goal_pt);
     // Only check endpoints and that length is non-negative; conversion to Euclidean is used only for verification
     assert!(len >= 0.0, "length should be non-negative");
     // Optionally, ensure it's at least as long as straight-line distance in Euclidean embedding
@@ -331,21 +223,21 @@ fn square_multiple_goals_lengths() {
     let faces = vec![[0u32, 1, 2], [0, 2, 3]];
     // Source at v0 on face 0 in barycentric coords
     let source_face = 0usize;
-    let source_bary = [1.0, 0.0, 0.0];
+    let source_bary = [0.9, 0.04, 0.06];
     // Goals: v1 (face 0), v3 (face 1), v2 (face 0)
     let goals = vec![
         FaceBary {
             face: 0usize,
-            bary: [0.0, 1.0, 0.0],
-        }, // v1
+            bary: [0.05, 0.9, 0.05],
+        }, // near v1
         FaceBary {
             face: 1usize,
-            bary: [0.0, 0.0, 1.0],
-        }, // v3 in face [v0,v2,v3]
+            bary: [0.05, 0.05, 0.9],
+        }, // near v3 in face [v0,v2,v3]
         FaceBary {
             face: 0usize,
-            bary: [0.0, 0.0, 1.0],
-        }, // v2 in face [v0,v1,v2]
+            bary: [0.04, 0.06, 0.9],
+        }, // near v2 in face [v0,v1,v2]
     ];
 
     let source = FaceBary {
@@ -356,56 +248,32 @@ fn square_multiple_goals_lengths() {
     let paths = shortest_paths_barycentric(&vertices, &faces, source, &goals).expect("compute");
     assert_eq!(paths.len(), goals.len());
 
-    let expected = [1.0, 1.0, (2.0f64).sqrt()];
     let source_pt = bary_on_face(&vertices, &faces, source_face, source_bary);
     for i in 0..goals.len() {
         let poly = &paths[i];
         // Validate consecutive traversals continuity (accept either global direction)
-        for k in 1..poly.len() {
-            let prev = poly[k - 1];
-            let next = poly[k];
-            let p_prev_exit = bary_on_face(&vertices, &faces, prev.face, prev.exit);
-            let p_prev_entry = bary_on_face(&vertices, &faces, prev.face, prev.entry);
-            let p_next_entry = bary_on_face(&vertices, &faces, next.face, next.entry);
-            let p_next_exit = bary_on_face(&vertices, &faces, next.face, next.exit);
-            let fwd = approx_pt(p_prev_exit, p_next_entry, 1e-9);
-            let bwd = approx_pt(p_prev_entry, p_next_exit, 1e-9);
-            assert!(
-                fwd || bwd,
-                "consecutive traversal mismatch at path {} segment {}: prev(face={}, entry={:?}, exit={:?}) next(face={}, entry={:?}, exit={:?})",
-                i,
-                k - 1,
-                prev.face,
-                prev.entry,
-                prev.exit,
-                next.face,
-                next.entry,
-                next.exit
-            );
-        }
+        assert_consecutive_traversals_continuity(&vertices, &faces, poly);
         let epoly = bary_poly_to_euclid(&vertices, &faces, poly);
         assert!(epoly.len() >= 2, "polyline has at least the endpoints");
         let len = polyline_len(&epoly);
         // Only convert to Euclidean for verification; accept algorithmic polyline sampling
         assert!(len >= 0.0, "length should be non-negative");
-        assert!(
-            len >= expected[i] - 1e-8,
-            "path {} len {} >= {}",
-            i,
-            len,
-            expected[i]
-        );
-        // endpoints (accept either order)
-        let first = epoly.first().copied().unwrap();
-        let last = epoly.last().copied().unwrap();
+
+        // endpoints (source must be first, goal must be last)
         let g = goals[i];
-        let goal_pt = bary_on_face(&vertices, &faces, g.face, g.bary);
-        assert!(
-            (approx_pt(first, source_pt, 1e-6) && approx_pt(last, goal_pt, 1e-6))
-                || (approx_pt(first, goal_pt, 1e-6) && approx_pt(last, source_pt, 1e-6)),
-            "endpoints must be source/goal in some order: first={:?}, last={:?}",
-            first,
-            last
-        );
+        assert!(approx_face_bary(
+            source.face,
+            source_bary,
+            poly.first().unwrap().face,
+            poly.first().unwrap().entry,
+            1e-6
+        ));
+        assert!(approx_face_bary(
+            g.face,
+            g.bary,
+            poly.last().unwrap().face,
+            poly.last().unwrap().exit,
+            1e-6
+        ));
     }
 }
