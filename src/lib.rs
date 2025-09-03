@@ -21,8 +21,5 @@ mod interpretation;
 pub mod types;
 
 // Re-export public API surface from types and interpretation
-pub use interpretation::{
-    group_events_to_traversals, group_events_to_traversals_with_mesh, shortest_paths,
-    shortest_paths_barycentric,
-};
+pub use interpretation::{group_events_to_traversals, shortest_paths, shortest_paths_barycentric};
 pub use types::{FaceBary, FaceTraversal, Faces, Point3, Points3, TraversalEvent, Vertices};

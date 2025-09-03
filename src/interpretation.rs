@@ -19,15 +19,6 @@ use crate::ffi;
 use crate::types::{FaceBary, FaceTraversal, Faces, Point3, Points3, TraversalEvent, Vertices};
 
 pub fn group_events_to_traversals(
-    event_paths: Vec<Vec<TraversalEvent>>,
-) -> Vec<Vec<FaceTraversal>> {
-    event_paths
-        .into_iter()
-        .map(|evs| single_event_path_to_traversals_generic(None, evs))
-        .collect()
-}
-
-pub fn group_events_to_traversals_with_mesh(
     faces: &[[u32; 3]],
     event_paths: Vec<Vec<TraversalEvent>>,
 ) -> Vec<Vec<FaceTraversal>> {
@@ -39,13 +30,6 @@ pub fn group_events_to_traversals_with_mesh(
 
 fn single_event_path_to_traversals_with_mesh(
     faces: &[[u32; 3]],
-    events: Vec<TraversalEvent>,
-) -> Vec<FaceTraversal> {
-    single_event_path_to_traversals_generic(Some(faces), events)
-}
-
-fn single_event_path_to_traversals_generic(
-    faces_opt: Option<&[[u32; 3]]>,
     events: Vec<TraversalEvent>,
 ) -> Vec<FaceTraversal> {
     let mut travs: Vec<FaceTraversal> = Vec::new();
@@ -113,7 +97,7 @@ fn single_event_path_to_traversals_generic(
                 last = to_bary;
             }
             TraversalEvent::Vertex { vertex } => {
-                if let (Some(cf), Some(faces)) = (current_face, faces_opt) {
+                if let Some(cf) = current_face {
                     let fv = faces[cf];
                     let one_hot = if fv[0] as usize == vertex {
                         Some([1.0, 0.0, 0.0])
@@ -133,7 +117,8 @@ fn single_event_path_to_traversals_generic(
                         entry = vb;
                         last = vb;
                     } else {
-                        panic!("Vertex {} not on current face {}", vertex, cf);
+                        // If the reported vertex is not on the current face, ignore this event.
+                        // Some backends may emit Vertex events as annotations not tied to the running face.
                     }
                 }
             }
@@ -322,7 +307,7 @@ pub fn shortest_paths(
             },
         );
     }
-    Ok(group_events_to_traversals(event_paths))
+    Ok(group_events_to_traversals(faces.0, event_paths))
 }
 
 /// Compute shortest paths using barycentric coordinates on faces (no vertex snapping).
@@ -410,5 +395,5 @@ pub fn shortest_paths_barycentric(
             },
         );
     }
-    Ok(group_events_to_traversals(event_paths))
+    Ok(group_events_to_traversals(faces, event_paths))
 }

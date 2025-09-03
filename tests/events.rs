@@ -134,17 +134,20 @@ fn group_events_simple_sequences() {
 }
 
 fn group_single(events: Vec<TraversalEvent>) -> Vec<FaceTraversal> {
-    // Use the crate's internal function via the public path conversion of a single path: group_events_to_traversals
-    // The helper keeps the test focused and avoids FFI interactions.
+    // Provide a dummy faces mesh large enough to cover all face indices used in these tests
+    // Faces content doesn't matter for cases without Vertex events.
+    let faces: Vec<[u32; 3]> = (0..8)
+        .map(|i| [i as u32, (i + 1) as u32, (i + 2) as u32])
+        .collect();
     let paths = vec![events];
-    let out = rust_cgal_shortest_paths::group_events_to_traversals(paths);
+    let out = rust_cgal_shortest_paths::group_events_to_traversals(&faces, paths);
     assert_eq!(out.len(), 1);
     out.into_iter().next().unwrap()
 }
 
 fn group_single_with_mesh(faces: &[[u32; 3]], events: Vec<TraversalEvent>) -> Vec<FaceTraversal> {
     let paths = vec![events];
-    let out = rust_cgal_shortest_paths::group_events_to_traversals_with_mesh(faces, paths);
+    let out = rust_cgal_shortest_paths::group_events_to_traversals(faces, paths);
     assert_eq!(out.len(), 1);
     out.into_iter().next().unwrap()
 }
