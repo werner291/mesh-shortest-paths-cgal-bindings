@@ -17,6 +17,7 @@
 
 use crate::ffi;
 use crate::types::{FaceBary, FaceTraversal, Faces, Point3, Points3, TraversalEvent, Vertices};
+use itertools::Itertools;
 
 pub fn group_events_to_traversals(
     faces: &[[u32; 3]],
@@ -28,111 +29,142 @@ pub fn group_events_to_traversals(
         .collect()
 }
 
+fn vertex_bary_for_face(faces: &[[u32; 3]], face_idx: usize, vertex: usize) -> [f64; 3] {
+    let fv = faces[face_idx];
+    if fv[0] as usize == vertex {
+        [1.0, 0.0, 0.0]
+    } else if fv[1] as usize == vertex {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
 fn single_event_path_to_traversals_with_mesh(
     faces: &[[u32; 3]],
     events: Vec<TraversalEvent>,
 ) -> Vec<FaceTraversal> {
-    let mut travs: Vec<FaceTraversal> = Vec::new();
-    let mut current_face: Option<usize> = None;
-    let mut entry: [f64; 3] = [0.0; 3];
-    let mut last: [f64; 3] = [0.0; 3];
-
-    for ev in events.into_iter() {
-        match ev {
-            TraversalEvent::BaryPoint { face, bary } => match current_face {
-                None => {
-                    current_face = Some(face);
-                    entry = bary;
-                    last = bary;
-                }
-                Some(cf) if cf == face => {
-                    last = bary;
-                }
-                Some(cf) => {
-                    travs.push(FaceTraversal {
-                        face: cf,
-                        entry,
-                        exit: last,
-                    });
-                    current_face = Some(face);
-                    entry = bary;
-                    last = bary;
-                }
-            },
-            TraversalEvent::Edge {
-                from_face,
-                from_bary,
-                to_face,
-                to_bary,
-            } => {
-                match current_face {
-                    None => {
-                        current_face = Some(from_face);
-                        entry = from_bary;
-                        last = from_bary;
-                    }
-                    Some(cf) if cf == from_face => {
-                        last = from_bary;
-                    }
-                    Some(cf) => {
-                        travs.push(FaceTraversal {
-                            face: cf,
-                            entry,
-                            exit: last,
-                        });
-                        current_face = Some(from_face);
-                        entry = from_bary;
-                        last = from_bary;
-                    }
-                }
-                if let Some(cf) = current_face {
-                    travs.push(FaceTraversal {
-                        face: cf,
-                        entry,
-                        exit: last,
-                    });
-                }
-                current_face = Some(to_face);
-                entry = to_bary;
-                last = to_bary;
-            }
-            TraversalEvent::Vertex { vertex } => {
-                if let Some(cf) = current_face {
-                    let fv = faces[cf];
-                    let one_hot = if fv[0] as usize == vertex {
-                        Some([1.0, 0.0, 0.0])
-                    } else if fv[1] as usize == vertex {
-                        Some([0.0, 1.0, 0.0])
-                    } else if fv[2] as usize == vertex {
-                        Some([0.0, 0.0, 1.0])
-                    } else {
-                        None
-                    };
-                    if let Some(vb) = one_hot {
-                        travs.push(FaceTraversal {
-                            face: cf,
-                            entry,
-                            exit: vb,
-                        });
-                        entry = vb;
-                        last = vb;
-                    } else {
-                        // If the reported vertex is not on the current face, ignore this event.
-                        // Some backends may emit Vertex events as annotations not tied to the running face.
-                    }
+    events
+        .into_iter()
+        .tuple_windows()
+        .map(|(entry, exit)| match (entry, exit) {
+            (
+                TraversalEvent::Edge {
+                    from_face: f1,
+                    from_bary: fb1,
+                    to_face: t1,
+                    to_bary: tb1,
+                },
+                TraversalEvent::Edge {
+                    from_face: f2,
+                    from_bary: fb2,
+                    to_face: t2,
+                    to_bary: tb2,
+                },
+            ) => {
+                assert_eq!(t1, f2);
+                FaceTraversal {
+                    face: t1,
+                    entry: tb1,
+                    exit: fb2,
                 }
             }
-        }
-    }
-
-    if let Some(cf) = current_face {
-        travs.push(FaceTraversal {
-            face: cf,
-            entry,
-            exit: last,
-        });
-    }
-    travs
+            (
+                TraversalEvent::Edge {
+                    from_face,
+                    from_bary,
+                    to_face,
+                    to_bary,
+                },
+                TraversalEvent::BaryPoint { face, bary },
+            ) => {
+                assert_eq!(to_face, face);
+                FaceTraversal {
+                    face,
+                    entry: to_bary,
+                    exit: bary,
+                }
+            }
+            (
+                TraversalEvent::BaryPoint { face: f1, bary: b1 },
+                TraversalEvent::Edge {
+                    from_face: f2,
+                    from_bary,
+                    to_face,
+                    to_bary,
+                },
+            ) => {
+                assert_eq!(f1, f2);
+                FaceTraversal {
+                    face: f1,
+                    entry: b1,
+                    exit: from_bary,
+                }
+            }
+            (
+                TraversalEvent::BaryPoint { face: f1, bary: b1 },
+                TraversalEvent::BaryPoint { face: f2, bary: b2 },
+            ) => {
+                assert_eq!(f1, f2);
+                FaceTraversal {
+                    face: f1,
+                    entry: b1,
+                    exit: b2,
+                }
+            }
+            (
+                TraversalEvent::Edge {
+                    from_face: _,
+                    from_bary: _,
+                    to_face,
+                    to_bary,
+                },
+                TraversalEvent::Vertex { vertex },
+            ) => {
+                let vb = vertex_bary_for_face(faces, to_face, vertex);
+                FaceTraversal {
+                    face: to_face,
+                    entry: to_bary,
+                    exit: vb,
+                }
+            }
+            (TraversalEvent::BaryPoint { face, bary }, TraversalEvent::Vertex { vertex }) => {
+                let vb = vertex_bary_for_face(faces, face, vertex);
+                FaceTraversal {
+                    face,
+                    entry: bary,
+                    exit: vb,
+                }
+            }
+            (
+                TraversalEvent::Vertex { vertex },
+                TraversalEvent::Edge {
+                    from_face,
+                    from_bary,
+                    to_face: _,
+                    to_bary: _,
+                },
+            ) => {
+                let vb = vertex_bary_for_face(faces, from_face, vertex);
+                FaceTraversal {
+                    face: from_face,
+                    entry: vb,
+                    exit: from_bary,
+                }
+            }
+            (TraversalEvent::Vertex { vertex }, TraversalEvent::BaryPoint { face, bary }) => {
+                let vb = vertex_bary_for_face(faces, face, vertex);
+                FaceTraversal {
+                    face,
+                    entry: vb,
+                    exit: bary,
+                }
+            }
+            (TraversalEvent::Vertex { .. }, TraversalEvent::Vertex { .. }) => {
+                panic!("Invalid path: consecutive vertex events are not allowed")
+            }
+        })
+        .collect()
 }
 
 fn read_event_paths(
@@ -384,16 +416,8 @@ pub fn shortest_paths_barycentric(
         ));
     }
 
-    let mut event_paths = read_event_paths(out_paths, out_sizes, goals.len());
-    // Ensure paths begin exactly at the given source barycentric point for stable endpoints
-    for evs in event_paths.iter_mut() {
-        evs.insert(
-            0,
-            TraversalEvent::BaryPoint {
-                face: source.face,
-                bary: source.bary,
-            },
-        );
-    }
-    Ok(group_events_to_traversals(faces, event_paths))
+    Ok(group_events_to_traversals(
+        faces,
+        read_event_paths(out_paths, out_sizes, goals.len()),
+    ))
 }
