@@ -196,6 +196,12 @@ fn read_event_paths(
         let mut out: Vec<Vec<TraversalEvent>> = Vec::with_capacity(count);
         for i in 0..guard.count {
             let n = sizes_slice[i];
+            if n == 0 {
+                assert!(paths_slice[i].is_null());
+                out.push(Vec::new());
+                continue;
+            }
+            assert!(!paths_slice[i].is_null());
             let items = std::slice::from_raw_parts(paths_slice[i], n);
             let mut v = Vec::with_capacity(n);
             for it in items {
