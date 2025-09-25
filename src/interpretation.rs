@@ -230,6 +230,10 @@ fn read_event_paths(
     }
 }
 
+#[deprecated(
+    since = "0.1.0",
+    note = "snapping to vertices is almost never what we want"
+)]
 /// Compute shortest paths on a triangle mesh from a Euclidean source to multiple Euclidean goals.
 /// Internally, both source and goals are snapped to the nearest vertices and routed using the
 /// barycentric-only C++ API; the returned polylines are expressed as barycentric states per segment.
