@@ -172,6 +172,9 @@ fn read_event_paths(
     out_sizes: *mut usize,
     count: usize,
 ) -> Vec<Vec<TraversalEvent>> {
+    assert!(!out_paths.is_null());
+    assert!(!out_sizes.is_null());
+
     unsafe {
         struct PathsGuard {
             paths: *mut *mut ffi::sp_event,
@@ -322,6 +325,8 @@ pub fn shortest_paths(
             &mut out_sizes,
         )
     };
+    assert!(!out_paths.is_null());
+    assert!(!out_sizes.is_null());
     if rc != 0 {
         return Err(format!(
             "sp_compute_paths_bary_states failed with code {}",
