@@ -177,13 +177,31 @@ int sp_compute_paths_events(sp_context* ctx,
             }
         }
 
+        // Workaround for a presumed bug in CGAL "Surface_mesh_shortest_path::nearest_on_face"
+        // whereby source points sharing a face never emit any events.
+        if (events.empty() && ctx->has_source_bary) {
+            sp_event start{};
+            start.kind = SP_EVENT_BARY;
+            start.fa = ctx->source_face_index;
+            start.a0 = ctx->source_bc[1];
+            start.a1 = ctx->source_bc[2];
+            start.a2 = ctx->source_bc[0];
+            events.push_back(start);
+
+            sp_event end{};
+            end.kind = SP_EVENT_BARY;
+            end.fa = fi;
+            end.a0 = bc[1];
+            end.a1 = bc[2];
+            end.a2 = bc[0];
+            events.push_back(end);
+        }
+
         sizes[i] = events.size();
-        sp_event* arr = nullptr;
-        if (sizes[i] > 0) {
-            arr = static_cast<sp_event*>(::operator new[](sizes[i] * sizeof(sp_event)));
-            for (size_t j = 0; j < sizes[i]; ++j) {
-                arr[j] = events[j];
-            }
+        
+        sp_event* arr = static_cast<sp_event*>(::operator new[](sizes[i] * sizeof(sp_event)));
+        for (size_t j = 0; j < sizes[i]; ++j) {
+            arr[j] = events[j];
         }
         paths[i] = arr;
     }
