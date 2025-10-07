@@ -152,6 +152,9 @@ int sp_compute_paths_events(sp_context* ctx,
                             sp_event*** out_paths,
                             size_t** out_sizes) {
     if (!ctx) return 1;
+
+    assert(ctx->has_source_bary && "Source location must be set before computing paths");
+
     sp_event** paths = static_cast<sp_event**>(::operator new[](goal_count * sizeof(sp_event*)));
     size_t* sizes = static_cast<size_t*>(::operator new[](goal_count * sizeof(size_t)));
     for (size_t i = 0; i < goal_count; ++i) {
@@ -197,8 +200,32 @@ int sp_compute_paths_events(sp_context* ctx,
             events.push_back(end);
         }
 
+        // Another special case: the first event is NOT the start point, or the last event is NOT the end point:
+        if (events.size() > 0 && events.front().kind != SP_EVENT_BARY) {
+            assert(events.front().kind == SP_EVENT_VERTEX && "First event must be vertex");
+
+            sp_event start{};
+            start.kind = SP_EVENT_BARY;
+            start.fa = ctx->source_face_index;
+            start.a0 = ctx->source_bc[1];
+            start.a1 = ctx->source_bc[2];
+            start.a2 = ctx->source_bc[0];
+            events.insert(events.begin(), start);
+        }
+        if (events.size() > 0 && events.back().kind != SP_EVENT_BARY) {
+            assert(events.back().kind == SP_EVENT_VERTEX && "Last event must be vertex");
+
+            sp_event end{};
+            end.kind = SP_EVENT_BARY;
+            end.fa = fi;
+            end.a0 = bc[1];
+            end.a1 = bc[2];
+            end.a2 = bc[0];
+            events.push_back(end);
+        }
+
         sizes[i] = events.size();
-        
+
         sp_event* arr = static_cast<sp_event*>(::operator new[](sizes[i] * sizeof(sp_event)));
         for (size_t j = 0; j < sizes[i]; ++j) {
             arr[j] = events[j];
